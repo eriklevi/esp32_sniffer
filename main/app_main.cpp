@@ -5,6 +5,7 @@
 #include <queue>
 #include <list>
 #include <mutex>
+#include <atomic>
 #include <iostream>
 #include <thread>
 #include <ctime>
@@ -70,7 +71,7 @@ time_t now;
 int s_is_connected = 0;
 int connection_lost = 0;
 int first = 0;
-int mqtt_connection_lost = 0;
+std::atomic<bool> mqtt_connection_lost = false;
 bool mqtt_disconnection_thread_running = false;
 std::mutex mqtt_disconnection_mutex;
 struct mg_connection *nc;
@@ -157,10 +158,11 @@ void set_mqtt_disconnection_thread_running(bool val){
  */
 void mqttDisconnectionTask(){
 	vTaskDelay(120000 / portTICK_PERIOD_MS);
-	if(mqtt_connection_lost == 1){
+	if(mqtt_connection_lost.load()){
 		ESP_LOGI(TAG,"Restarting device after mqtt disconnection!");
 		esp_restart();
 	}
+	ESP_LOGI(TAG, "Coonection reestablished, disconnectionTask returning!");
 	set_mqtt_disconnection_thread_running(false);
 	return;		
 }
@@ -529,7 +531,7 @@ static esp_err_t mqtt_event_handler(esp_mqtt_event_handle_t event)
 		ESP_LOGI(TAG, "MQTT_EVENT_CONNECTED");
 		s_is_connected = 1;
 		first = 0;
-		mqtt_connection_lost = 0;
+		mqtt_connection_lost.store(false);
 		//esp_wifi_set_mode(WIFI_MODE_STA);
 		//stopHttpServer();
 		esp_mqtt_client_subscribe(client1, "commands", 0);
@@ -552,7 +554,7 @@ static esp_err_t mqtt_event_handler(esp_mqtt_event_handle_t event)
 				disconnection_thread.detach();
 			}	
 		}
-		mqtt_connection_lost = 1;
+		mqtt_connection_lost.store(true);
 		//In case of disconnection the task waits for 5 seconds
 		//before trying to reconnect to the broker
 		//vTaskDelay(5000 / portTICK_PERIOD_MS);
