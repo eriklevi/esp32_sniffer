@@ -141,6 +141,16 @@ class SharedQueue {
 SharedQueue<std::shared_ptr<ProbeRequestData>> *sq = new SharedQueue<std::shared_ptr<ProbeRequestData>>();
 std::list<std::shared_ptr<WifiAccessPoint>> *list = new std::list<std::shared_ptr<WifiAccessPoint>>();
 
+bool get_mqtt_disconnection_thread_running(){
+	std::lock_guard<std::mutex> lg(mqtt_disconnection_mutex);
+	return mqtt_disconnection_thread_running;
+}
+
+void set_mqtt_disconnection_thread_running(bool val){
+	std::lock_guard<std::mutex> lg(mqtt_disconnection_mutex);
+	mqtt_disconnection_thread_running = val;
+}
+
 /**
  * Checks if the connection is re-established the restart the device accordingly.
  * This is needed in case of unknown behaviour to try to avoid losing too many data.
@@ -509,16 +519,6 @@ void stopHttpServer(){
 	if(httpd_stop(&server) == ESP_OK){
 		std::cout << "Stopped HTTP server" << std::endl;
 	}
-}
-
-bool get_mqtt_disconnection_thread_running(){
-	std::lock_guard<std::mutex> lg(mqtt_disconnection_mutex);
-	return mqtt_disconnection_thread_running;
-}
-
-void set_mqtt_disconnection_thread_running(bool val){
-	std::lock_guard<std::mutex> lg(mqtt_disconnection_mutex);
-	mqtt_disconnection_thread_running = val;
 }
 
 static esp_err_t mqtt_event_handler(esp_mqtt_event_handle_t event)
