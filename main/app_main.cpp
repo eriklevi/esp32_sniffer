@@ -99,6 +99,8 @@ std::string secret = "secret12345";
 std::string deviceName;
 std::string devicePassword;
 
+int power_thrashold = 0;
+
 bool httpRequestSuccess = false;
 struct tm timeinfo;
 bool wifiConnected = false;
@@ -438,11 +440,11 @@ void wifi_sniffer_cb(void *recv_buf, wifi_promiscuous_pkt_type_t type)
 		}
 	}*/
 
-	/*
-	if(sniffer->rx_ctrl.rssi < -70){
+	
+	if(sniffer->rx_ctrl.rssi < power_thrashold<0 ? power_thrashold : -power_thrashold){
 		std::cout << "pacchetto scartato potenza " << sniffer->rx_ctrl.rssi << std::endl;
 		return;
-	}*/
+	}
 
 	printf("source mac: %02X.%02X.%02X.%02X.%02X.%02X\n", sniffer_payload->source_mac[0],sniffer_payload->source_mac[1],sniffer_payload->source_mac[2],sniffer_payload->source_mac[3],sniffer_payload->source_mac[4],sniffer_payload->source_mac[5]);
 	uint8_t test = 2;
@@ -572,6 +574,12 @@ static esp_err_t mqtt_event_handler(esp_mqtt_event_handle_t event)
 		ESP_LOGI(TAG, "MQTT_EVENT_DATA");
 		printf("TOPIC=%.*s\r\n", event->topic_len, event->topic);
 		printf("DATA=%.*s\r\n", event->data_len, event->data);
+		if(strcmp(event->data,"restart") == 0)
+			for (int i = 3; i >= 0; i--) {
+				std::cout << " Reset command received, restarting in " << i << std::endl;
+			    vTaskDelay(1000 / portTICK_PERIOD_MS);
+			}
+			esp_restart();
 		break;
 	case MQTT_EVENT_ERROR:
 		ESP_LOGI(TAG, "MQTT_EVENT_ERROR");
@@ -1154,6 +1162,7 @@ void app_main(){
 				cJSON *topic_to_subscribe_JSON = NULL;
 				cJSON *lwt_message_JSON = NULL;
 				cJSON *lwt_topic_JSON = NULL;
+				cJSON *power_thrashold_JSON = NULL;
 				if(root == NULL){
 					const char *error_ptr = cJSON_GetErrorPtr();
 					if (error_ptr != NULL)
@@ -1163,49 +1172,83 @@ void app_main(){
 					}
 				}
 				else{
-					//TODO controllare corrispondenza tra nome variabili e quelle json
+					httpRequestSuccess = true;
+					//
 					dump_mode = cJSON_GetObjectItemCaseSensitive(root, "dumpMode");
-					privacy_mode = cJSON_GetObjectItemCaseSensitive(root, "privacyMode");
-					broker_address = cJSON_GetObjectItemCaseSensitive(root, "brokerAddress");
-					broker_port = cJSON_GetObjectItemCaseSensitive(root, "brokerPort");
-					topic_to_subscribe_JSON = cJSON_GetObjectItemCaseSensitive(root, "topic");
-					lwt_message_JSON = cJSON_GetObjectItemCaseSensitive(root, "lwtMessage");
-					lwt_topic_JSON = cJSON_GetObjectItemCaseSensitive(root, "lwtTopic");
-					if(		cJSON_IsBool(dump_mode)                //Check correctness of JSON file
-							&& cJSON_IsBool(privacy_mode)
-							&& cJSON_IsString(broker_address)
-							&& broker_address->valuestring != NULL
-							&& cJSON_IsNumber(broker_port)
-							&& broker_port != NULL
-							&& cJSON_IsString(topic_to_subscribe_JSON)
-							&& topic_to_subscribe_JSON->valuestring != NULL
-							&& cJSON_IsString(lwt_message_JSON)
-							&& lwt_message_JSON->valuestring != NULL
-							&& cJSON_IsString(lwt_topic_JSON)
-							&& lwt_topic_JSON->valuestring != NULL){
-						std::cout << "Dump mode: " << cJSON_IsTrue(dump_mode) << std::endl;
-						std::cout << "Privacy mode: " << cJSON_IsTrue(privacy_mode) << std::endl;
-						std::cout << "Broker address: " << broker_address->valuestring << std::endl;
-						std::cout << "Broker port: " << broker_port->valueint << std::endl;
-						std::cout << "Topic to subscribe: " << topic_to_subscribe_JSON->valuestring << std::endl;
-						std::cout << "lwt message: " << lwt_message_JSON->valuestring << std::endl;
-						std::cout << "lwt topic: " << lwt_topic_JSON->valuestring << std::endl; 
+					if(cJSON_IsBool(dump_mode)){
 						dump_mode_bool = cJSON_IsTrue(dump_mode);
+						ESP_LOGI(TAG, "Dump mode: %s", dump_mode_bool ? "true" : "false");
+					} else{
+						dump_mode_bool = true;
+						ESP_LOGE(TAG,"Error in JSON parsing: default value for dump mode = true");
+					}
+					//
+					privacy_mode = cJSON_GetObjectItemCaseSensitive(root, "privacyMode");
+					if(cJSON_IsBool(privacy_mode)){
 						privacy_mode_bool = cJSON_IsTrue(privacy_mode);
+						ESP_LOGI(TAG, "Privacy mode: %s", privacy_mode_bool ? "true" : "false");
+					} else{
+						privacy_mode_bool = true;
+						ESP_LOGE(TAG,"Error in JSON parsing: default value for privacy mode = true");
+					}
+					//
+					broker_address = cJSON_GetObjectItemCaseSensitive(root, "brokerAddress");
+					if(cJSON_IsString(broker_address) && broker_address->valuestring != NULL){
+						ESP_LOGI(TAG,"Broker address: %s", broker_address->valuestring);
 						brokerHost = broker_address->valuestring;
-						brokerPort = broker_port->valueint;
-						broker_password = devicePassword;
-						broker_username = deviceName;
-						other_topic = "commands/"+deviceName;
-						lwt_message = lwt_message_JSON->valuestring;
-						lwt_topic = lwt_topic_JSON->valuestring;
-						topic_to_subscribe = topic_to_subscribe_JSON->valuestring;
-						httpRequestSuccess = true;
-					}
-					else{
+					} else{
+						//in this case we cant continue 
+						ESP_LOGE(TAG,"Error in JSON parsing: unable to get broker address!");
 						httpRequestSuccess = false;
-						std::cout << "Errore nel parsing del token" << std::endl;
 					}
+					//
+					broker_port = cJSON_GetObjectItemCaseSensitive(root, "brokerPort");
+					if(cJSON_IsNumber(broker_port) && broker_port != NULL){
+						brokerPort = broker_port->valueint;
+						ESP_LOGI(TAG, "Broker port: %d", brokerPort);
+					} else{
+						ESP_LOGE(TAG, "Error in JSON parsing: unable to get broker port! default value = 1883");
+						brokerPort = 1883;
+					}
+					//
+					topic_to_subscribe_JSON = cJSON_GetObjectItemCaseSensitive(root, "topic");
+					if(cJSON_IsString(topic_to_subscribe_JSON) && topic_to_subscribe_JSON->valuestring != NULL){
+						topic_to_subscribe = topic_to_subscribe_JSON->valuestring;
+						ESP_LOGI(TAG, "Topic to subscribe: %s", topic_to_subscribe);
+					} else{
+						ESP_LOGE(TAG, "Error in JSON parsing: unable to get topic to subscribe!");
+						httpRequestSuccess = false;
+					}
+					//
+					lwt_message_JSON = cJSON_GetObjectItemCaseSensitive(root, "lwtMessage");
+					if(cJSON_IsString(lwt_message_JSON) && lwt_message_JSON->valuestring != NULL){
+						lwt_message = lwt_message_JSON->valuestring;
+						ESP_LOGI(TAG, "lwt message: %s", lwt_message);
+					} else{
+						ESP_LOGE(TAG, "Error in JSON parsing: unable to get lwt message! default value = disconnected");
+						lwt_message = "disconnected";
+					}
+					//
+					lwt_topic_JSON = cJSON_GetObjectItemCaseSensitive(root, "lwtTopic");
+					if(cJSON_IsString(lwt_topic_JSON) && lwt_topic_JSON->valuestring != NULL){
+						lwt_topic = lwt_topic_JSON->valuestring;
+						ESP_LOGI(TAG, "lwt topic: %s", lwt_topic);
+					} else{
+						ESP_LOGE(TAG, "Error in JSON parsing: unable to get lwt topic! default value = lwt_topic");
+						lwt_topic = "lwt_topic";
+					}
+					power_thrashold_JSON = cJSON_GetObjectItemCaseSensitive(root, "powerThrashold");
+					if(cJSON_IsNumber(power_thrashold_JSON) && power_thrashold_JSON->valueint != NULL){
+						power_thrashold = power_thrashold_JSON->valueint;
+						ESP_LOGI(TAG, "power thrashold: %d", power_thrashold);
+					} else{
+						ESP_LOGE(TAG, "Error in JSON parsing: unable to get power threashold! default value = 0");
+						power_thrashold = 0;
+					}
+					//other settings
+					broker_password = devicePassword;
+					broker_username = deviceName;
+					other_topic = "commands/"+deviceName;
 				}
 				cJSON_Delete(root); //free json object memory
 				if(httpRequestSuccess){
