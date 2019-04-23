@@ -71,7 +71,7 @@ time_t now;
 int s_is_connected = 0;
 int connection_lost = 0;
 int first = 0;
-std::atomic<bool> mqtt_connection_lost = false;
+std::atomic<bool> mqtt_connection_lost;
 bool mqtt_disconnection_thread_running = false;
 std::mutex mqtt_disconnection_mutex;
 struct mg_connection *nc;
