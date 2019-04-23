@@ -68,7 +68,9 @@ uint8_t global_mac_byte = 0;
 uint8_t mac[6];
 time_t now;
 int s_is_connected = 0;
+int connection_lost = 0;
 int first = 0;
+int mqtt_connection_lost = 0;
 struct mg_connection *nc;
 
 std::string configurationProxy = "0.0.0.0"; //default to avoid problems
@@ -83,10 +85,16 @@ bool dump_mode_bool = false;
 bool privacy_mode_bool = false;
 std::string broker_username;
 std::string broker_password;
+std::string topic_to_subscribe;
+std::string lwt_message;
+std::string lwt_topic;
+std::string other_topic;
+
 
 std::string oauthToken;
 std::string secret = "secret12345";
 std::string deviceName;
+std::string devicePassword;
 
 bool httpRequestSuccess = false;
 struct tm timeinfo;
@@ -96,6 +104,7 @@ httpd_config_t config = HTTPD_DEFAULT_CONFIG();
 esp_mqtt_client_handle_t client1 = NULL;
 char data_buffer[2048];
 int data_len = 0;
+std::thread disconnectionHandler;
 
 
 extern "C"{
@@ -130,6 +139,19 @@ class SharedQueue {
 
 SharedQueue<std::shared_ptr<ProbeRequestData>> *sq = new SharedQueue<std::shared_ptr<ProbeRequestData>>();
 std::list<std::shared_ptr<WifiAccessPoint>> *list = new std::list<std::shared_ptr<WifiAccessPoint>>();
+
+/**
+ * Checks if the connection is re-established the restart the device accordingly.
+ * This is needed in case of unknown behaviour to try to avoid losing too many data.
+ */
+void mqttDisconnectionTask(){
+	vTaskDelay(120000 / portTICK_PERIOD_MS);
+	if(mqtt_connection_lost == 1){
+		ESP_LOGI(TAG,"Restarting device after mqtt disconnection!");
+		esp_restart();
+	}
+	return;		
+}
 
 void pkt_parser(uint8_t *payload, uint16_t size, uint8_t * buffer, uint8_t *ssid, int *ssid_size)
 {
@@ -495,25 +517,30 @@ static esp_err_t mqtt_event_handler(esp_mqtt_event_handle_t event)
 		ESP_LOGI(TAG, "MQTT_EVENT_CONNECTED");
 		s_is_connected = 1;
 		first = 0;
+		mqtt_connection_lost = 0;
+		//esp_wifi_set_mode(WIFI_MODE_STA);
+		//stopHttpServer();
+		esp_mqtt_client_subscribe(client1, "commands", 0);
+		esp_mqtt_client_subscribe(client1, other_topic.c_str(), 2);
 		printf("avvio modalità promiscua\n");
 		ESP_ERROR_CHECK(esp_wifi_set_promiscuous_rx_cb(wifi_sniffer_cb));
 		ESP_ERROR_CHECK(esp_wifi_set_promiscuous(1));
-		esp_wifi_set_mode(WIFI_MODE_STA);
-		stopHttpServer();
 		break;
 	case MQTT_EVENT_DISCONNECTED:
 		ESP_LOGI(TAG, "MQTT_EVENT_DISCONNECTED");
 		s_is_connected = 0;
 		//stop promiscous mode
 		if(first == 0){
-			printf("Stopping promiscous mode\n");
+			ESP_LOGI(TAG, "Stopping promiscous mode, device will restart in 2 minutes unless connection is reestablished");
 			ESP_ERROR_CHECK(esp_wifi_set_promiscuous(0));
-			esp_wifi_set_mode(WIFI_MODE_APSTA);
 			first = 1;
+			std::thread disconnection_thread(mqttDisconnectionTask);
+			disconnection_thread.detach();
 		}
+		mqtt_connection_lost = 1;
 		//In case of disconnection the task waits for 5 seconds
 		//before trying to reconnect to the broker
-		vTaskDelay(5000 / portTICK_PERIOD_MS);
+		//vTaskDelay(5000 / portTICK_PERIOD_MS);
 		break;
 	case MQTT_EVENT_SUBSCRIBED:
 		ESP_LOGI(TAG, "MQTT_EVENT_SUBSCRIBED, msg_id=%d", event->msg_id);
@@ -542,10 +569,13 @@ static esp_err_t wifi_event_handler(void *ctx, system_event_t *event)
 {
 	switch (event->event_id) {
 		case SYSTEM_EVENT_STA_START:
+			ESP_LOGI(TAG, "Lanciato evento station start!");
 			esp_wifi_connect();
 			break;
 		case SYSTEM_EVENT_STA_GOT_IP:
+			ESP_LOGI(TAG, "Lanciato evento station gotip!");
 			xEventGroupSetBits(wifi_event_group, CONNECTED_BIT);
+			connection_lost = 1;
 			if (!g_station_list) {
 				g_station_list = (station_info_t*)malloc(sizeof(station_info_t));
 				g_station_list->next = NULL;
@@ -553,11 +583,15 @@ static esp_err_t wifi_event_handler(void *ctx, system_event_t *event)
 			break;
 			//TODO gestire la disconnessione dal wifi
 		case SYSTEM_EVENT_STA_DISCONNECTED:
-			for (int i = 3; i >= 0; i--) {
-				std::cout << " Wifi connection lost, restarting in " << i << std::endl;
-			    vTaskDelay(1000 / portTICK_PERIOD_MS);
+			ESP_LOGI(TAG, "Lanciato evento station disconnected!");
+			if(connection_lost == 1){
+				connection_lost = 0;
+				for (int i = 3; i >= 0; i--) {
+					std::cout << " Wifi connection lost, restarting in " << i << std::endl;
+			    	vTaskDelay(1000 / portTICK_PERIOD_MS);
+				}
+				esp_restart();
 			}
-			esp_restart();
 			break;
 		default:
 			break;
@@ -671,14 +705,18 @@ static void mqtt_app_start(void)
 {
     esp_mqtt_client_config_t  mqtt_cfg = {};
 	mqtt_cfg.event_handle = mqtt_event_handler;
-	std::strncpy((char*)mqtt_cfg.host, brokerHost.c_str(), brokerHost.length());
+	mqtt_cfg.host = brokerHost.c_str();
 	mqtt_cfg.port = brokerPort;
-	std::strncpy((char*)mqtt_cfg.client_id, "prova", 5);
-	std::strncpy((char*)mqtt_cfg.lwt_topic, "/lwt", 4);
-	std::strncpy((char*)mqtt_cfg.lwt_msg, "offline", 7);
+	mqtt_cfg.client_id = deviceName.c_str();
+	mqtt_cfg.lwt_topic = lwt_topic.c_str();
+	mqtt_cfg.lwt_msg = lwt_message.c_str();
+	mqtt_cfg.lwt_msg_len = lwt_message.length();
+	mqtt_cfg.username = broker_username.c_str();
+	mqtt_cfg.password = broker_password.c_str();
 	mqtt_cfg.lwt_qos = 0;
 	mqtt_cfg.lwt_retain = 0;
 	mqtt_cfg.keepalive = 120;
+	std::cout << mqtt_cfg.host << std::endl;
 	client1 = esp_mqtt_client_init(&mqtt_cfg);
     esp_mqtt_client_start(client1);
 }
@@ -738,10 +776,9 @@ void httpFetchAuthTokenTask(){
 	ESP_ERROR_CHECK(esp_http_client_set_header(client, "Accept", "application/json"));
 	ESP_ERROR_CHECK(esp_http_client_set_header(client, "Authorization", "Basic Y2xpZW50OnNlY3JldA=="));
 	//POST data setup
-	std::string password = deviceName + secret;
-	std::cout << password << std::endl;
-	std::cout << "Hash :"<< md5(password) << std::endl;
-	std::string POST_data = "username=" + deviceName + "&password=" + md5(password).substr(0,12) + "&grant_type=password";
+	devicePassword = md5(deviceName+secret).substr(0,12);
+	std::cout << "Hash :"<< devicePassword << std::endl;
+	std::string POST_data = "username=" + deviceName + "&password=" + devicePassword + "&grant_type=password";
 	ESP_ERROR_CHECK(esp_http_client_set_post_field(client, POST_data.c_str(), POST_data.length()));
 	//Performing request
 	esp_err_t err = esp_http_client_perform(client);
@@ -1053,6 +1090,7 @@ void app_main(){
 	else{
 		if(wifiConnected == false){
 			std::cout << "Impossible to connect to known networks, switching to Access Point Mode" << std::endl;
+			connection_lost = 0;
 			esp_wifi_set_mode(WIFI_MODE_AP);
 		}
 		else{
@@ -1096,6 +1134,9 @@ void app_main(){
 				cJSON *privacy_mode = NULL;
 				cJSON *broker_address = NULL;
 				cJSON *broker_port = NULL;
+				cJSON *topic_to_subscribe_JSON = NULL;
+				cJSON *lwt_message_JSON = NULL;
+				cJSON *lwt_topic_JSON = NULL;
 				if(root == NULL){
 					const char *error_ptr = cJSON_GetErrorPtr();
 					if (error_ptr != NULL)
@@ -1110,20 +1151,38 @@ void app_main(){
 					privacy_mode = cJSON_GetObjectItemCaseSensitive(root, "privacyMode");
 					broker_address = cJSON_GetObjectItemCaseSensitive(root, "brokerAddress");
 					broker_port = cJSON_GetObjectItemCaseSensitive(root, "brokerPort");
+					topic_to_subscribe_JSON = cJSON_GetObjectItemCaseSensitive(root, "topic");
+					lwt_message_JSON = cJSON_GetObjectItemCaseSensitive(root, "lwtMessage");
+					lwt_topic_JSON = cJSON_GetObjectItemCaseSensitive(root, "lwtTopic");
 					if(		cJSON_IsBool(dump_mode)                //Check correctness of JSON file
 							&& cJSON_IsBool(privacy_mode)
 							&& cJSON_IsString(broker_address)
 							&& broker_address->valuestring != NULL
 							&& cJSON_IsNumber(broker_port)
-							&& broker_port != NULL){
+							&& broker_port != NULL
+							&& cJSON_IsString(topic_to_subscribe_JSON)
+							&& topic_to_subscribe_JSON->valuestring != NULL
+							&& cJSON_IsString(lwt_message_JSON)
+							&& lwt_message_JSON->valuestring != NULL
+							&& cJSON_IsString(lwt_topic_JSON)
+							&& lwt_topic_JSON->valuestring != NULL){
 						std::cout << "Dump mode: " << cJSON_IsTrue(dump_mode) << std::endl;
 						std::cout << "Privacy mode: " << cJSON_IsTrue(privacy_mode) << std::endl;
 						std::cout << "Broker address: " << broker_address->valuestring << std::endl;
 						std::cout << "Broker port: " << broker_port->valueint << std::endl;
+						std::cout << "Topic to subscribe: " << topic_to_subscribe_JSON->valuestring << std::endl;
+						std::cout << "lwt message: " << lwt_message_JSON->valuestring << std::endl;
+						std::cout << "lwt topic: " << lwt_topic_JSON->valuestring << std::endl; 
 						dump_mode_bool = cJSON_IsTrue(dump_mode);
 						privacy_mode_bool = cJSON_IsTrue(privacy_mode);
 						brokerHost = broker_address->valuestring;
 						brokerPort = broker_port->valueint;
+						broker_password = devicePassword;
+						broker_username = deviceName;
+						other_topic = "commands/"+deviceName;
+						lwt_message = lwt_message_JSON->valuestring;
+						lwt_topic = lwt_topic_JSON->valuestring;
+						topic_to_subscribe = topic_to_subscribe_JSON->valuestring;
 						httpRequestSuccess = true;
 					}
 					else{
@@ -1139,6 +1198,7 @@ void app_main(){
 				}
 				else{
 					ESP_LOGI(TAG, "Unable to fetch configuration, wifi set to AP mode");
+					connection_lost = 0;
 					esp_wifi_set_mode(WIFI_MODE_AP);
 				}
 			}
@@ -1149,6 +1209,7 @@ void app_main(){
 				 * to allow to change the configuration server address
 				 */
 				ESP_LOGI(TAG, "Unable to fetch configuration, wifi set to AP mode");
+				connection_lost=0;
 				esp_wifi_set_mode(WIFI_MODE_AP);
 			}
 		}
