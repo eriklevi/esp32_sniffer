@@ -441,7 +441,7 @@ void wifi_sniffer_cb(void *recv_buf, wifi_promiscuous_pkt_type_t type)
 	}*/
 
 	
-	if(sniffer->rx_ctrl.rssi < power_thrashold<0 ? power_thrashold : -power_thrashold){
+	if(sniffer->rx_ctrl.rssi < power_thrashold){
 		std::cout << "pacchetto scartato potenza " << sniffer->rx_ctrl.rssi << std::endl;
 		return;
 	}
@@ -1214,7 +1214,7 @@ void app_main(){
 					topic_to_subscribe_JSON = cJSON_GetObjectItemCaseSensitive(root, "topic");
 					if(cJSON_IsString(topic_to_subscribe_JSON) && topic_to_subscribe_JSON->valuestring != NULL){
 						topic_to_subscribe = topic_to_subscribe_JSON->valuestring;
-						ESP_LOGI(TAG, "Topic to subscribe: %s", topic_to_subscribe);
+						ESP_LOGI(TAG, "Topic to subscribe: %s", topic_to_subscribe.c_str());
 					} else{
 						ESP_LOGE(TAG, "Error in JSON parsing: unable to get topic to subscribe!");
 						httpRequestSuccess = false;
@@ -1223,7 +1223,7 @@ void app_main(){
 					lwt_message_JSON = cJSON_GetObjectItemCaseSensitive(root, "lwtMessage");
 					if(cJSON_IsString(lwt_message_JSON) && lwt_message_JSON->valuestring != NULL){
 						lwt_message = lwt_message_JSON->valuestring;
-						ESP_LOGI(TAG, "lwt message: %s", lwt_message);
+						ESP_LOGI(TAG, "lwt message: %s", lwt_message.c_str());
 					} else{
 						ESP_LOGE(TAG, "Error in JSON parsing: unable to get lwt message! default value = disconnected");
 						lwt_message = "disconnected";
@@ -1232,18 +1232,25 @@ void app_main(){
 					lwt_topic_JSON = cJSON_GetObjectItemCaseSensitive(root, "lwtTopic");
 					if(cJSON_IsString(lwt_topic_JSON) && lwt_topic_JSON->valuestring != NULL){
 						lwt_topic = lwt_topic_JSON->valuestring;
-						ESP_LOGI(TAG, "lwt topic: %s", lwt_topic);
+						ESP_LOGI(TAG, "lwt topic: %s", lwt_topic.c_str());
 					} else{
 						ESP_LOGE(TAG, "Error in JSON parsing: unable to get lwt topic! default value = lwt_topic");
 						lwt_topic = "lwt_topic";
 					}
 					power_thrashold_JSON = cJSON_GetObjectItemCaseSensitive(root, "powerThrashold");
-					if(cJSON_IsNumber(power_thrashold_JSON) && power_thrashold_JSON->valueint != NULL){
-						power_thrashold = power_thrashold_JSON->valueint;
-						ESP_LOGI(TAG, "power thrashold: %d", power_thrashold);
+					if(cJSON_IsNumber(power_thrashold_JSON)){
+						/**
+						 * Remember, power thrashold is negative and between 0 and -100 where closer to 0 stronger the signal
+						 */
+						power_thrashold = power_thrashold_JSON->valueint < 0 ? power_thrashold_JSON->valueint : -1*(power_thrashold_JSON->valueint);
+						if(power_thrashold > 0 && power_thrashold < -100){
+							ESP_LOGE(TAG, "Invalid power thrashold! default value = -100");
+							power_thrashold = -100; //prendo tutto 
+						} else
+							ESP_LOGI(TAG, "power thrashold: %d", power_thrashold);
 					} else{
-						ESP_LOGE(TAG, "Error in JSON parsing: unable to get power threashold! default value = 0");
-						power_thrashold = 0;
+						ESP_LOGE(TAG, "Error in JSON parsing: unable to get power threashold! default value = -100");
+						power_thrashold = -100; //prendo tutto 
 					}
 					//other settings
 					broker_password = devicePassword;
