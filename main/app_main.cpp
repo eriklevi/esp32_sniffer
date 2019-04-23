@@ -71,6 +71,8 @@ int s_is_connected = 0;
 int connection_lost = 0;
 int first = 0;
 int mqtt_connection_lost = 0;
+bool mqtt_disconnection_thread_running = false;
+std::mutex mqtt_disconnection_mutex;
 struct mg_connection *nc;
 
 std::string configurationProxy = "0.0.0.0"; //default to avoid problems
@@ -104,7 +106,6 @@ httpd_config_t config = HTTPD_DEFAULT_CONFIG();
 esp_mqtt_client_handle_t client1 = NULL;
 char data_buffer[2048];
 int data_len = 0;
-std::thread disconnectionHandler;
 
 
 extern "C"{
@@ -150,6 +151,7 @@ void mqttDisconnectionTask(){
 		ESP_LOGI(TAG,"Restarting device after mqtt disconnection!");
 		esp_restart();
 	}
+	set_mqtt_disconnection_thread_running(false);
 	return;		
 }
 
@@ -509,6 +511,16 @@ void stopHttpServer(){
 	}
 }
 
+bool get_mqtt_disconnection_thread_running(){
+	std::lock_guard<std::mutex> lg(mqtt_disconnection_mutex);
+	return mqtt_disconnection_thread_running;
+}
+
+void set_mqtt_disconnection_thread_running(bool val){
+	std::lock_guard<std::mutex> lg(mqtt_disconnection_mutex);
+	mqtt_disconnection_thread_running = val;
+}
+
 static esp_err_t mqtt_event_handler(esp_mqtt_event_handle_t event)
 {
 	//your_context_t *context = event->context;
@@ -534,8 +546,11 @@ static esp_err_t mqtt_event_handler(esp_mqtt_event_handle_t event)
 			ESP_LOGI(TAG, "Stopping promiscous mode, device will restart in 2 minutes unless connection is reestablished");
 			ESP_ERROR_CHECK(esp_wifi_set_promiscuous(0));
 			first = 1;
-			std::thread disconnection_thread(mqttDisconnectionTask);
-			disconnection_thread.detach();
+			if(!get_mqtt_disconnection_thread_running()){
+				set_mqtt_disconnection_thread_running(true);
+				std::thread disconnection_thread(mqttDisconnectionTask);
+				disconnection_thread.detach();
+			}	
 		}
 		mqtt_connection_lost = 1;
 		//In case of disconnection the task waits for 5 seconds
