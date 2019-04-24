@@ -7,6 +7,23 @@
 
 #include "ProbeRequestData.h"
 #include <cstring>
+#include <cstdint>
+#include <stdio.h>
+#include <stdint.h>
+#include <stddef.h>
+#include <string.h>
+#include <queue>
+#include <list>
+#include <mutex>
+#include <atomic>
+#include <iostream>
+#include <thread>
+#include <ctime>
+#include <memory>
+#include <fstream>
+#include <sstream>
+#include <string>
+#include <cstdlib>
 
 ProbeRequestData::ProbeRequestData() {
 }
@@ -31,6 +48,7 @@ void ProbeRequestData::getDeviceMAC(uint8_t* buffer){
 }
 
 int ProbeRequestData::getDataBuffer(uint8_t *buffer, uint8_t *sniffer_mac){
+	std::cout << "emtratto in getbufferdata" << std::endl;
 	memcpy(buffer, sniffer_mac, 6*sizeof(uint8_t));
 	memcpy(buffer + (6*sizeof(uint8_t)), this->deviceMAC , 6*sizeof(uint8_t));
 	memcpy(buffer + (12*sizeof(uint8_t)), &this->signalStrength, sizeof(uint8_t));
@@ -38,6 +56,7 @@ int ProbeRequestData::getDataBuffer(uint8_t *buffer, uint8_t *sniffer_mac){
 	memcpy(buffer + 14*sizeof(uint8_t), &this->apple_specific_tag, sizeof(uint8_t));
 	memcpy(buffer + 15*sizeof(uint8_t), this->ssid, this->ssid_len*sizeof(uint8_t));
 	memcpy(buffer + 15*sizeof(uint8_t) + this->ssid_len*sizeof(uint8_t) , this->fingerprint, this->fingerprint_len*sizeof(uint8_t));
+	std::cout << "finito in getbufferdata" << std::endl;
 	return 15 + this->ssid_len + this->fingerprint_len;
 }
 void ProbeRequestData::setSSID(uint8_t *source, int size){

@@ -262,13 +262,14 @@ void pkt_parser(uint8_t *payload, uint16_t size, uint8_t * buffer, uint8_t *ssid
 	memcpy(data, &len, sizeof(uint16_t));
 	memcpy(data+sizeof(uint16_t), str_tags, tag_c*sizeof(uint8_t));
 	memcpy(data+sizeof(uint16_t)+tag_c*sizeof(uint8_t), tagData, offset*sizeof(uint8_t));
-	std::cout << "tag list -> " << std::endl;
-	for(int j = 0; j < data_len; j++)
-		printf("%02X", data[j]);
-	std::cout << std::endl;
+	//std::cout << "tag list -> " << std::endl;
+	//for(int j = 0; j < data_len; j++)
+		//printf("%02X", data[j]);
+	//std::cout << std::endl;
 	md5(data, data_len, buffer);
 	free(data);
 	free(tagData);
+	std::cout << "finito parser" << std::endl;
 }
 
 void get_ssid_from_payload(uint8_t* data,uint8_t* ssid,int *ssid_size){
@@ -451,6 +452,7 @@ void wifi_sniffer_cb(void *recv_buf, wifi_promiscuous_pkt_type_t type)
 
 	if(dump_mode_bool){
 		//mandiamo i pacchetti immediatamente
+
 		int totalSize = 6+len;
 		char* data_buffer = (char*) malloc(totalSize*sizeof(uint8_t));
 		memcpy(data_buffer, mac, 6*sizeof(uint8_t));
@@ -459,6 +461,7 @@ void wifi_sniffer_cb(void *recv_buf, wifi_promiscuous_pkt_type_t type)
 		free(data_buffer);
 	}else{
 		if((sniffer_payload->source_mac[0] & test) == 0){
+			std::cout << "pacchetto global" << std::endl;
 			//Global MAC address
 			std::shared_ptr<ProbeRequestData> p = std::make_shared<ProbeRequestData>();
 			get_ssid_from_payload(data, ssid, &ssid_size);
@@ -466,17 +469,18 @@ void wifi_sniffer_cb(void *recv_buf, wifi_promiscuous_pkt_type_t type)
 			p->setAppleSpecificTag(0);
 			p->setFingerprintLen(0);
 			p->setDeviceMAC((unsigned char *)sniffer_payload->source_mac, 6);
-			p->setSignalStrength((signed char)sniffer->rx_ctrl.rssi);
+			//p->setSignalStrength((signed char)sniffer->rx_ctrl.rssi);
 			p->setSSID(ssid, ssid_size);
 			sq->pushBack(p);
 		}
 		else{
+			std::cout << "pacchetto local" << std::endl;
 			pkt_parser(data, payload_len, buffer, ssid, &ssid_size);
 			std::shared_ptr<ProbeRequestData> p = std::make_shared<ProbeRequestData>();
 			p->setGlobalMac(1);
 			p->setAppleSpecificTag(0);
 			p->setDeviceMAC((unsigned char *)sniffer_payload->source_mac, 6);
-			p->setSignalStrength((signed char)sniffer->rx_ctrl.rssi);
+			//p->setSignalStrength((signed char)sniffer->rx_ctrl.rssi);
 			p->setFingerprint(buffer, 16);
 			p->setSSID(ssid, ssid_size);
 			sq->pushBack(p);
@@ -771,7 +775,9 @@ void mqtt_task(){
 		if(!sq->checkEmpty()){
 			prd = sq->popFront();
 			length = prd->getDataBuffer(dataToSend, mac);
+
 			esp_mqtt_client_publish(client1, "topic", (char*)dataToSend, length, 0, 0);
+			std::cout << "publicato" << std::endl;
 		}
 		else{
 			//task sleeps for 100 ms if the queue is empty
