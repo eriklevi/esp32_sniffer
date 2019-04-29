@@ -88,7 +88,7 @@ bool dump_mode_bool = false;
 bool privacy_mode_bool = false;
 std::string broker_username;
 std::string broker_password;
-std::string topic_to_subscribe;
+std::string topic_to_publish;
 std::string lwt_message;
 std::string lwt_topic;
 std::string other_topic;
@@ -177,7 +177,7 @@ void mqttDisconnectionTask(){
  * ssid -> stores the advertised ssid if present
  * ssid_size -> stores the length of ssid
  */
-void pkt_parser(uint8_t *payload, uint16_t size, uint8_t * buffer, uint8_t *ssid, int *ssid_size)
+void pkt_parser(uint8_t *payload, uint16_t size, uint8_t * buffer, uint8_t *ssid, uint8_t *ssid_size)
 {
 	//len = in the end it contains the length of payload without eventual SSID tag
 	uint16_t len;
@@ -185,7 +185,7 @@ void pkt_parser(uint8_t *payload, uint16_t size, uint8_t * buffer, uint8_t *ssid
 	int tag_c = 0;
 	int tag = 0;
 	int tag_size = 0;
-	//first 2 bytes are not useful
+	//first 2 bytes are sequence number
 	int i = 2;
 	int offset = 0;
 	int data_len;
@@ -241,7 +241,7 @@ void pkt_parser(uint8_t *payload, uint16_t size, uint8_t * buffer, uint8_t *ssid
 				len -= tag_size;
 				//we copy the ssid in the ssid buffer
 				memcpy(ssid, &payload[i], tag_size);
-				*ssid_size = tag_size;
+				*ssid_size = payload[i-1];
 //				std::cout << "lunghezza tag 00 -> " << tag_size << std::endl;
 //				std::cout << "len -> " << len << std::endl;
 //				//dobbiamo aggiornare i!!!
@@ -281,8 +281,8 @@ void pkt_parser(uint8_t *payload, uint16_t size, uint8_t * buffer, uint8_t *ssid
 	std::cout << "finito parser" << std::endl;
 }
 
-void get_ssid_from_payload(uint8_t* data,uint8_t* ssid,int *ssid_size){
-	int tag_len = 0;
+void get_ssid_from_payload(uint8_t* data,uint8_t* ssid,uint8_t *ssid_size){
+	uint8_t tag_len = 0;
 	if(data[2] == 0){
 		tag_len = data[3];
 		memcpy(ssid, &data[4], tag_len*sizeof(uint8_t));
@@ -418,7 +418,7 @@ void wifi_sniffer_cb(void *recv_buf, wifi_promiscuous_pkt_type_t type)
 {
 	uint8_t buffer[16];
 	uint8_t ssid[32];
-	int ssid_size = 0;
+	uint8_t ssid_size = 0;
 	wifi_promiscuous_pkt_t *sniffer = (wifi_promiscuous_pkt_t *)recv_buf;
 	sniffer_payload_t *sniffer_payload = (sniffer_payload_t *)sniffer->payload;
 	uint8_t *data = sniffer_payload->payload;
@@ -474,6 +474,7 @@ void wifi_sniffer_cb(void *recv_buf, wifi_promiscuous_pkt_type_t type)
 			//Global MAC address
 			std::shared_ptr<ProbeRequestData> p = std::make_shared<ProbeRequestData>();
 			get_ssid_from_payload(data, ssid, &ssid_size);
+			p->setSequenceNumber(data);
 			//p->setGlobalMac(0);
 			//p->setAppleSpecificTag(0);
 			p->setFingerprintLen(0);
@@ -488,6 +489,7 @@ void wifi_sniffer_cb(void *recv_buf, wifi_promiscuous_pkt_type_t type)
 			std::shared_ptr<ProbeRequestData> p = std::make_shared<ProbeRequestData>();
 			//p->setGlobalMac(1);
 			//p->setAppleSpecificTag(0);
+			p->setSequenceNumber(data);
 			p->setDeviceMAC((unsigned char *)sniffer_payload->source_mac, 6);
 			//p->setSignalStrength((signed char)sniffer->rx_ctrl.rssi);
 			p->setFingerprint(buffer, 16);
@@ -770,23 +772,21 @@ void mqtt_task(){
 	int length = 0;
 	/*
 	 * dataToSend content:
-	 *  6 bytes -> probe request device mac
-	 * 16 bytes -> fingerprint
-	 *  1 byte  -> signal strength
-	 *  6 bytes -> station mac
-	 * 32 bytes -> eventual ssid
-	 *  total = 61 bytes
+	 *  6 bytes -> sniffer mac
+	 *  6 bytes -> device mac
+	 * 	2 bytes -> sequence number
+	 *  1 byte -> ssid len
+	 *  32 bytes -> eventual ssid
+	 *  16 bytes -> fingerprint
+	 *  total = 63 bytes
 	 */
 	std::shared_ptr<ProbeRequestData> prd(NULL);
 	while (1) {
-		/*dataToSend[0] = data_type_bin;
-				dataToSend[1] = len >> 8;
-				dataToSend[2] = len & 0xFF;*/
 		if(!sq->checkEmpty()){
 			prd = sq->popFront();
 			length = prd->getDataBuffer(dataToSend, mac);
 
-			esp_mqtt_client_publish(client1, "topic", (char*)dataToSend, length, 0, 0);
+			esp_mqtt_client_publish(client1, topic_to_publish.c_str(), (char*)dataToSend, length, 0, 0);
 			std::cout << "publicato" << std::endl;
 		}
 		else{
@@ -1175,7 +1175,7 @@ void app_main(){
 				cJSON *privacy_mode = NULL;
 				cJSON *broker_address = NULL;
 				cJSON *broker_port = NULL;
-				cJSON *topic_to_subscribe_JSON = NULL;
+				cJSON *topic_to_publish_JSON = NULL;
 				cJSON *lwt_message_JSON = NULL;
 				cJSON *lwt_topic_JSON = NULL;
 				cJSON *power_thrashold_JSON = NULL;
@@ -1227,12 +1227,12 @@ void app_main(){
 						brokerPort = 1883;
 					}
 					//
-					topic_to_subscribe_JSON = cJSON_GetObjectItemCaseSensitive(root, "topic");
-					if(cJSON_IsString(topic_to_subscribe_JSON) && topic_to_subscribe_JSON->valuestring != NULL){
-						topic_to_subscribe = topic_to_subscribe_JSON->valuestring;
-						ESP_LOGI(TAG, "Topic to subscribe: %s", topic_to_subscribe.c_str());
+					topic_to_publish_JSON = cJSON_GetObjectItemCaseSensitive(root, "topic");
+					if(cJSON_IsString(topic_to_publish_JSON) && topic_to_publish_JSON->valuestring != NULL){
+						topic_to_publish = topic_to_publish_JSON->valuestring;
+						ESP_LOGI(TAG, "Topic to publish: %s", topic_to_publish.c_str());
 					} else{
-						ESP_LOGE(TAG, "Error in JSON parsing: unable to get topic to subscribe!");
+						ESP_LOGE(TAG, "Error in JSON parsing: unable to get topic to publish!");
 						httpRequestSuccess = false;
 					}
 					//

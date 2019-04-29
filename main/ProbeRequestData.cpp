@@ -26,6 +26,9 @@
 #include <cstdlib>
 
 ProbeRequestData::ProbeRequestData() {
+	this->fingerprint_len = 0;
+	this->sequence_number = 0;
+	this->ssid_len = 0;
 }
 
 ProbeRequestData::~ProbeRequestData() {
@@ -48,26 +51,15 @@ void ProbeRequestData::getDeviceMAC(uint8_t* buffer){
 }
 
 int ProbeRequestData::getDataBuffer(uint8_t *buffer, uint8_t *sniffer_mac){
-	std::cout << "emtratto in getbufferdata" << std::endl;
 	memcpy(buffer, sniffer_mac, 6*sizeof(uint8_t));
-		std::cout << "emtratto in getbufferdata" << std::endl;
-
 	memcpy(buffer + (6*sizeof(uint8_t)), this->deviceMAC , 6*sizeof(uint8_t));
-		std::cout << "emtratto in getbufferdata" << std::endl;
-
-	//memcpy(buffer + (12*sizeof(uint8_t)), &this->signalStrength, sizeof(uint8_t));
-	//memcpy(buffer + 13*sizeof(uint8_t), &this->global_mac, sizeof(uint8_t));
-	//memcpy(buffer + 14*sizeof(uint8_t), &this->apple_specific_tag, sizeof(uint8_t));
-	memcpy(buffer + 12*sizeof(uint8_t), this->ssid, this->ssid_len*sizeof(uint8_t));
-		std::cout << "emtratto in getbufferdata"<< this->ssid_len << std::endl;
-		std::cout << "lunghezza fp "<< this->fingerprint_len << std::endl;
-
-	memcpy(buffer + 13*sizeof(uint8_t) + this->ssid_len*sizeof(uint8_t) , this->fingerprint, this->fingerprint_len*sizeof(uint8_t));
-
-	std::cout << "finito in getbufferdata" << std::endl;
-	return 12 + this->ssid_len + this->fingerprint_len;
+	memcpy(buffer + 12*sizeof(uint8_t), &this->sequence_number, sizeof(uint16_t));
+	memcpy(buffer + 12*sizeof(uint8_t) + sizeof(uint16_t), &this->ssid_len, sizeof(uint8_t));
+	memcpy(buffer + 13*sizeof(uint8_t) + sizeof(uint16_t), this->ssid, this->ssid_len*sizeof(uint8_t));
+	memcpy(buffer + 13*sizeof(uint8_t) + this->ssid_len*sizeof(uint8_t) + sizeof(uint16_t), this->fingerprint, this->fingerprint_len*sizeof(uint8_t));
+	return 15 + this->ssid_len + this->fingerprint_len;
 }
-void ProbeRequestData::setSSID(uint8_t *source, int size){
+void ProbeRequestData::setSSID(uint8_t *source, uint8_t size){
 	memcpy((void*)this->ssid, source, size);
 	this->ssid_len = size;
 }
@@ -86,5 +78,8 @@ void ProbeRequestData::setAppleSpecificTag(uint8_t value){
 }
 void ProbeRequestData::setFingerprintLen(int value){
 	this->fingerprint_len = value;
+}
+void ProbeRequestData::setSequenceNumber(uint8_t* number){
+	memcpy(&this->sequence_number, number, 2);
 }
 
