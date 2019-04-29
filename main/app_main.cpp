@@ -169,6 +169,14 @@ void mqttDisconnectionTask(){
 	return;		
 }
 
+/**
+ * This function parses the received probe request and calculate the fingerprint.
+ * payload -> pointer to packet payload
+ * size -> size of payload
+ * buffer -> stores the fp
+ * ssid -> stores the advertised ssid if present
+ * ssid_size -> stores the length of ssid
+ */
 void pkt_parser(uint8_t *payload, uint16_t size, uint8_t * buffer, uint8_t *ssid, int *ssid_size)
 {
 	//len = in the end it contains the length of payload without eventual SSID tag
@@ -244,13 +252,14 @@ void pkt_parser(uint8_t *payload, uint16_t size, uint8_t * buffer, uint8_t *ssid
 		}
 		/**
 		 * in case of a tag of the following we save the payload inside tag data to produce the hash
-		 * DD == 221
-		 * 01 == 1
-		 * 32 == 50
-		 * 7F == 127
-		 * 2D == 45
+		 * DD == 221 Vendor specific IE
+		 * 01 == 1 supported rates
+		 * 32 == 50 extended supported rates
+		 * 7F == 127 extended capabilities
+		 * 2D == 45 ht capabilities
+		 * BF == 191 vht capabilities
 		 */
-		if(tag == 221 || tag == 1 || tag == 50 || tag == 127 || tag == 45){
+		if(tag == 221 || tag == 1 || tag == 50 || tag == 127 || tag == 45 || tag == 191){
 			memcpy(tagData+offset, &payload[i], tag_size*sizeof(uint8_t));
 			offset += tag_size;
 		}
@@ -465,8 +474,8 @@ void wifi_sniffer_cb(void *recv_buf, wifi_promiscuous_pkt_type_t type)
 			//Global MAC address
 			std::shared_ptr<ProbeRequestData> p = std::make_shared<ProbeRequestData>();
 			get_ssid_from_payload(data, ssid, &ssid_size);
-			p->setGlobalMac(0);
-			p->setAppleSpecificTag(0);
+			//p->setGlobalMac(0);
+			//p->setAppleSpecificTag(0);
 			p->setFingerprintLen(0);
 			p->setDeviceMAC((unsigned char *)sniffer_payload->source_mac, 6);
 			//p->setSignalStrength((signed char)sniffer->rx_ctrl.rssi);
@@ -477,11 +486,12 @@ void wifi_sniffer_cb(void *recv_buf, wifi_promiscuous_pkt_type_t type)
 			std::cout << "pacchetto local" << std::endl;
 			pkt_parser(data, payload_len, buffer, ssid, &ssid_size);
 			std::shared_ptr<ProbeRequestData> p = std::make_shared<ProbeRequestData>();
-			p->setGlobalMac(1);
-			p->setAppleSpecificTag(0);
+			//p->setGlobalMac(1);
+			//p->setAppleSpecificTag(0);
 			p->setDeviceMAC((unsigned char *)sniffer_payload->source_mac, 6);
 			//p->setSignalStrength((signed char)sniffer->rx_ctrl.rssi);
 			p->setFingerprint(buffer, 16);
+			p->setFingerprintLen(16);
 			p->setSSID(ssid, ssid_size);
 			sq->pushBack(p);
 		}
@@ -697,7 +707,7 @@ static void wifi_init(){
 	esp_wifi_set_mode(WIFI_MODE_APSTA);
 	wifi_config_t ap_config = {};
 	ap_config.ap = {};
-	std::string name = "SNIFFER_" + deviceName + "_CONFIG";
+	std::string name = deviceName + "_CONFIG";
 	memcpy(ap_config.ap.ssid, name.c_str(), name.length());
 	memcpy(ap_config.ap.password,"password1234",12);
 	ap_config.ap.channel = 0;
