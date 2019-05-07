@@ -756,7 +756,7 @@ static void mqtt_app_start(void)
 	mqtt_cfg.password = broker_password.c_str();
 	mqtt_cfg.lwt_qos = 0;
 	mqtt_cfg.lwt_retain = 0;
-	mqtt_cfg.keepalive = 120;
+	mqtt_cfg.keepalive = 10;
 	std::cout << mqtt_cfg.host << std::endl;
 	client1 = esp_mqtt_client_init(&mqtt_cfg);
     esp_mqtt_client_start(client1);
