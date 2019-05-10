@@ -109,6 +109,7 @@ httpd_config_t config = HTTPD_DEFAULT_CONFIG();
 esp_mqtt_client_handle_t client1 = NULL;
 char data_buffer[2048];
 int data_len = 0;
+std::string message = "";
 
 
 extern "C"{
@@ -931,7 +932,7 @@ esp_err_t hello_get_handler(httpd_req_t *req)
     /* Send response with custom headers and body set as the
      * string passed in user context*/
     //const char* resp_str = (const char*) req->user_ctx;
-    std::string responseHtml = *getHomePage(list, configurationProxy, mac, configurationProxyPort);
+    std::string responseHtml = *getHomePage(list, configurationProxy, mac, configurationProxyPort, message);
     const char* resp_str = responseHtml.c_str();
     httpd_resp_send(req, resp_str, strlen(resp_str));
 
@@ -979,17 +980,20 @@ esp_err_t echo_post_handler(httpd_req_t *req)
     switch(res){
 		case 0:{
 			//tutto ok
-			std::string responseHtml = *getHomePageCustomMessage(list, configurationProxy, std::string("Please, reset the device!"));
+			message = "Reset the device to use the new configuration!";
+			std::string responseHtml = *getHomePage(list, configurationProxy, mac, configurationProxyPort, message);
 			const char* resp_str = responseHtml.c_str();
 			httpd_resp_send(req, resp_str, strlen(resp_str));
 			break;
 		}
 		case 1:{
-			std::string responseHtml = *getHomePageCustomMessage(list, configurationProxy, std::string("Invalid SSID or password!"));
+			message = "Invalid SSID or password!";
+			std::string responseHtml = *getHomePage(list, configurationProxy, mac, configurationProxyPort, message);
 			break;
 		}
 		case 2:{
-			std::string responseHtml = *getHomePageCustomMessage(list, configurationProxy, std::string("Invalid ws address!"));
+			message = "Invalid address!";
+			std::string responseHtml = *getHomePage(list, configurationProxy, mac, configurationProxyPort,  message);
 			break;
 		}
     }
@@ -1131,6 +1135,7 @@ void app_main(){
 	else{
 		if(wifiConnected == false){
 			std::cout << "Impossible to connect to known networks, switching to Access Point Mode" << std::endl;
+			message = "ERROR: Impossible to connect to known networks!";
 			connection_lost = 0;
 			esp_wifi_set_mode(WIFI_MODE_AP);
 		}
@@ -1281,6 +1286,7 @@ void app_main(){
 				}
 				else{
 					ESP_LOGI(TAG, "Unable to fetch configuration, wifi set to AP mode");
+					message = "ERROR: Unable to fetch configuration!";
 					connection_lost = 0;
 					esp_wifi_set_mode(WIFI_MODE_AP);
 				}
@@ -1291,7 +1297,8 @@ void app_main(){
 				 * an error occurred, it's better to return in manual configuration mode
 				 * to allow to change the configuration server address
 				 */
-				ESP_LOGI(TAG, "Unable to fetch configuration, wifi set to AP mode");
+				ESP_LOGI(TAG, "Unable to fetch auth token, wifi set to AP mode");
+				message = "ERROR: Unable to fetch auth token!";
 				connection_lost=0;
 				esp_wifi_set_mode(WIFI_MODE_AP);
 			}
