@@ -72,8 +72,11 @@ int s_is_connected = 0;
 int connection_lost = 0;
 int first = 0;
 std::atomic<bool> mqtt_connection_lost;
+std::atomic<bool> wifi_connection_lost;
 bool mqtt_disconnection_thread_running = false;
 std::mutex mqtt_disconnection_mutex;
+bool wifi_disconnection_thread_running = false;
+std::mutex wifi_disconnection_mutex;
 struct mg_connection *nc;
 
 std::string configurationProxy = "0.0.0.0"; //default to avoid problems
@@ -155,18 +158,40 @@ void set_mqtt_disconnection_thread_running(bool val){
 	mqtt_disconnection_thread_running = val;
 }
 
+bool get_wifi_disconnection_thread_running(){
+	std::lock_guard<std::mutex> lg(wifi_disconnection_mutex);
+	return wifi_disconnection_thread_running;
+}
+
+void set_wifi_disconnection_thread_running(bool val){
+	std::lock_guard<std::mutex> lg(wifi_disconnection_mutex);
+	wifi_disconnection_thread_running = val;
+}
+
 /**
  * Checks if the connection is re-established the restart the device accordingly.
  * This is needed in case of unknown behaviour to try to avoid losing too many data.
  */
 void mqttDisconnectionTask(){
-	vTaskDelay(120000 / portTICK_PERIOD_MS);
+	vTaskDelay(300000 / portTICK_PERIOD_MS);
 	if(mqtt_connection_lost.load()){
 		ESP_LOGI(TAG,"Restarting device after mqtt disconnection!");
 		esp_restart();
 	}
-	ESP_LOGI(TAG, "Coonection reestablished, disconnectionTask returning!");
+	ESP_LOGI(TAG, "Connection reestablished, disconnectionTask returning!");
 	set_mqtt_disconnection_thread_running(false);
+	return;		
+}
+
+void wifiDisconnectionTask(){
+	ESP_LOGI(TAG, "Started Wifi disconnection task");
+	vTaskDelay(300000 / portTICK_PERIOD_MS);
+	if(wifi_connection_lost.load()){
+		ESP_LOGI(TAG,"Restarting device after wifi disconnection!");
+		esp_restart();
+	}
+	ESP_LOGI(TAG, "Connection reestablished, disconnectionTask returning!");
+	set_wifi_disconnection_thread_running(false);
 	return;		
 }
 
@@ -197,15 +222,15 @@ void pkt_parser(uint8_t *payload, uint16_t size, uint8_t * buffer, uint8_t *ssid
 	uint8_t *tagData = (uint8_t*)malloc(size*sizeof(uint8_t));
 	tag_size = payload[3];
 	len = size;
-	//std::cout << std::endl;
-	//std::cout << "len -> " << len << std::endl;
+	std::cout << std::endl;
+	std::cout << "len -> " << len << std::endl;
 	/**
 	 * Parsing
 	 */
-//	std::cout << "payload -> " << std::endl;
-//		for(int j = 0; j < size; j++)
-//			printf("%02X", payload[j]);
-//		std::cout << std::endl;
+	std::cout << "payload -> " << std::endl;
+		for(int j = 0; j < size; j++)
+			printf("%02X", payload[j]);
+		std::cout << std::endl;
 	while(i < size){
 		tag = payload[i];
 		//std::cout << "tag -> " << tag << std::endl;
@@ -423,20 +448,30 @@ void wifi_sniffer_cb(void *recv_buf, wifi_promiscuous_pkt_type_t type)
 	wifi_promiscuous_pkt_t *sniffer = (wifi_promiscuous_pkt_t *)recv_buf;
 	sniffer_payload_t *sniffer_payload = (sniffer_payload_t *)sniffer->payload;
 	uint8_t *data = sniffer_payload->payload;
-	//len rappresenta la lunghezza del payload + i 4 byte finali di check
+	//len rappresenta la lunghezza totale di header + payload(seq + tagged parameters) + i 4 byte finali di check
 	uint16_t len =  sniffer->rx_ctrl.sig_len;
 
-    /*bisogna togliere i 24 byte dell'header + gli ultimi 4 di check
-     * 4 byte header
+    /*bisogna togliere i 22 byte dell'header + gli ultimi 4 di check
+     * ------------------- Header
+	 * 4 byte header
      * 6 byte rec mac
      * 6 byte dest mac
      * 6 bssid
-     * 2 byte sequence number totale 24
-     *
-     * + 4 di check alla fine
+     * ------------------- Payload
+	 * D021 <---- sequence number
+	 * 0000 
+	 * 010882848B0C12961824
+	 * 030102
+	 * 32043048606C
+	 * 2D1A6D1117FF00000000000000000000000100000000000004060A00
+	 * 7F080000008000000000
+	 * (output preso da stampa di debug di paket parser)
+	 * --------------------->  fine tagged parameters
+	 * 4 di check alla fine
+	 * 
+	 * totale da togliere per avere solo la lunghezza del payload del pacchetto (tagged params + seq) = 26
      */
 	uint16_t payload_len = len - 26;
-	//il sequence number è dentro il payload quindi se faccio -28 lo conto due volte visto che inizio a fare il parsing del pacchetto a partire da i=2
 
 	/* Check if the packet is Probe Request  */
 	//0100 è il codice corrispondente al probe request
@@ -444,14 +479,6 @@ void wifi_sniffer_cb(void *recv_buf, wifi_promiscuous_pkt_type_t type)
 		return;
 	}
 
-	/* Filter out some useless packet
-	for (int i = 0; i < 32; ++i) {
-		if (!memcmp(sniffer_payload->source_mac, esp_module_mac[i], 3)) {
-			return;
-		}
-	}*/
-
-	
 	if(sniffer->rx_ctrl.rssi < power_thrashold){
 		std::cout << "pacchetto scartato potenza " << sniffer->rx_ctrl.rssi << std::endl;
 		return;
@@ -478,9 +505,10 @@ void wifi_sniffer_cb(void *recv_buf, wifi_promiscuous_pkt_type_t type)
 			p->setSequenceNumber(data);
 			//p->setGlobalMac(0);
 			//p->setAppleSpecificTag(0);
+			p->setFCS(data, len);
 			p->setFingerprintLen(0);
 			p->setDeviceMAC((unsigned char *)sniffer_payload->source_mac, 6);
-			//p->setSignalStrength((signed char)sniffer->rx_ctrl.rssi);
+			p->setSignalStrength((signed char)sniffer->rx_ctrl.rssi);
 			p->setSSID(ssid, ssid_size);
 			sq->pushBack(p);
 		}
@@ -492,9 +520,10 @@ void wifi_sniffer_cb(void *recv_buf, wifi_promiscuous_pkt_type_t type)
 			//p->setAppleSpecificTag(0);
 			p->setSequenceNumber(data);
 			p->setDeviceMAC((unsigned char *)sniffer_payload->source_mac, 6);
-			//p->setSignalStrength((signed char)sniffer->rx_ctrl.rssi);
+			p->setSignalStrength((signed char)sniffer->rx_ctrl.rssi);
 			p->setFingerprint(buffer, 16);
 			p->setFingerprintLen(16);
+			p->setFCS(data, len);
 			p->setSSID(ssid, ssid_size);
 			sq->pushBack(p);
 		}
@@ -564,7 +593,7 @@ static esp_err_t mqtt_event_handler(esp_mqtt_event_handle_t event)
 		s_is_connected = 0;
 		//stop promiscous mode
 		if(first == 0){
-			ESP_LOGI(TAG, "Stopping promiscous mode, device will restart in 2 minutes unless connection is reestablished");
+			ESP_LOGI(TAG, "Stopping promiscous mode, device will restart unless connection is reestablished");
 			ESP_ERROR_CHECK(esp_wifi_set_promiscuous(0));
 			first = 1;
 			if(!get_mqtt_disconnection_thread_running()){
@@ -617,7 +646,9 @@ static esp_err_t wifi_event_handler(void *ctx, system_event_t *event)
 		case SYSTEM_EVENT_STA_GOT_IP:
 			ESP_LOGI(TAG, "Lanciato evento station gotip!");
 			xEventGroupSetBits(wifi_event_group, CONNECTED_BIT);
+			wifiConnected = true;
 			connection_lost = 1;
+			wifi_connection_lost.store(false);
 			if (!g_station_list) {
 				g_station_list = (station_info_t*)malloc(sizeof(station_info_t));
 				g_station_list->next = NULL;
@@ -628,12 +659,20 @@ static esp_err_t wifi_event_handler(void *ctx, system_event_t *event)
 			ESP_LOGI(TAG, "Lanciato evento station disconnected!");
 			if(connection_lost == 1){
 				connection_lost = 0;
-				for (int i = 3; i >= 0; i--) {
+				/*for (int i = 3; i >= 0; i--) {
 					std::cout << " Wifi connection lost, restarting in " << i << std::endl;
 			    	vTaskDelay(1000 / portTICK_PERIOD_MS);
 				}
-				esp_restart();
+				esp_restart();*/
+				if(!get_wifi_disconnection_thread_running()){
+					set_wifi_disconnection_thread_running(true);
+					std::thread wifi_disconnection_thread(wifiDisconnectionTask);
+					wifi_disconnection_thread.detach();
+				}	
 			}
+			wifi_connection_lost.store(true);
+			vTaskDelay(10000/portTICK_PERIOD_MS);
+			esp_wifi_connect();
 			break;
 		default:
 			break;
@@ -696,7 +735,7 @@ static void wifi_init_sta()
 }
 */
 
-static void wifi_init(){
+	static void wifi_init(){
 	EventBits_t uxBits;
 	//trying to connect to each station for 10 seconds
 	const TickType_t xTicksToWait = 10000 / portTICK_PERIOD_MS;
@@ -743,6 +782,32 @@ static void wifi_init(){
 	}
 }
 
+static void wifi_reconnect(){
+	wifi_config_t ap_config = {};
+	EventBits_t uxBits;
+	const TickType_t xTicksToWait = 10000 / portTICK_PERIOD_MS;
+	for (std::list<std::shared_ptr<WifiAccessPoint>>::const_iterator iterator = list->begin(), end = list->end(); iterator != end; ++iterator) {
+		std::shared_ptr<WifiAccessPoint> p = *iterator;
+		memcpy(ap_config.sta.ssid, p->getSSID(), p->getSSIDLength());
+		memcpy(ap_config.sta.password, p->getPassword(), p->getPasswordLength());
+		ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_STA, &ap_config));
+		std::cout << "Trying to connect to " << p->getSSIDAsString() << std::endl;
+		ESP_LOGI(TAG, "Waiting for wifi");
+		ESP_ERROR_CHECK(esp_wifi_connect());
+		uxBits = xEventGroupWaitBits(wifi_event_group, CONNECTED_BIT, false, true, xTicksToWait);
+		if( ( uxBits & CONNECTED_BIT ) != 0 ) {
+			std::cout << "Connected!" << std::endl;
+			//check if xEventGroupWaitBits returned for wifi successfully connected or not
+			wifiConnected = true;
+			break;
+		}
+		else{
+			std::cout << "Failed to connect, trying next network" << std::endl;
+			ESP_ERROR_CHECK(esp_wifi_disconnect());
+		}
+	}
+}
+
 static void mqtt_app_start(void)
 {
     esp_mqtt_client_config_t  mqtt_cfg = {};
@@ -757,7 +822,7 @@ static void mqtt_app_start(void)
 	mqtt_cfg.password = broker_password.c_str();
 	mqtt_cfg.lwt_qos = 0;
 	mqtt_cfg.lwt_retain = 0;
-	mqtt_cfg.keepalive = 10;
+	mqtt_cfg.keepalive = 60;
 	std::cout << mqtt_cfg.host << std::endl;
 	client1 = esp_mqtt_client_init(&mqtt_cfg);
     esp_mqtt_client_start(client1);
@@ -769,17 +834,18 @@ static void mqtt_app_start(void)
  */
 
 void mqtt_task(){
-	uint8_t dataToSend[63];
+	uint8_t dataToSend[64];
 	int length = 0;
 	/*
 	 * dataToSend content:
 	 *  6 bytes -> sniffer mac
 	 *  6 bytes -> device mac
 	 * 	2 bytes -> sequence number
+	 *  1 byte  -> rssi
 	 *  1 byte -> ssid len
 	 *  32 bytes -> eventual ssid
 	 *  16 bytes -> fingerprint
-	 *  total = 63 bytes
+	 *  total = 64 bytes
 	 */
 	std::shared_ptr<ProbeRequestData> prd(NULL);
 	while (1) {
@@ -805,12 +871,14 @@ void httpFetchAuthTokenTask(){
 	out_string = ss.str();
 	std::string url = "http://" + configurationProxy +":"+ out_string + "/auth/oauth/token";
 	config.url = url.c_str();
-	config.host = configurationProxy.c_str();
-	config.port = configurationProxyPort;
-	config.path = "auth/oauth/token";
+	//config.host = configurationProxy.c_str();
+	//config.port = configurationProxyPort;
+	//config.path = "auth/oauth/token";
 	config.method = HTTP_METHOD_POST;
 	config.event_handler = HttpRequestsHandler;
 	config.max_redirection_count = 100;
+	config.disable_auto_redirect = false;
+	config.buffer_size = 2048;
 	std:: cout << config.url << std::endl;
 	esp_http_client_handle_t client = esp_http_client_init(&config);
 	//Request header setup
@@ -1126,20 +1194,33 @@ void app_main(){
 	 * Iterating over saved AP, stting wifiConnected to true if connection is successfull
 	 * otherwise switch to access point mode and set up http server to change setup
 	 */
+	wifi_connection_lost.store(false);
+	connection_lost = 0;
 	wifi_init();
 	server = startHttpServer();
 	if(server == NULL){
 		//An error occurred during http server initialization
 		std::cout << "An error occurred during http server initialization" << std::endl;
+		for (int i = 10; i >= 0; i--) {
+					std::cout << "Restarting in " << i << std::endl;
+			    	vTaskDelay(1000 / portTICK_PERIOD_MS);
+				}
+				esp_restart();
 	}
 	else{
-		if(wifiConnected == false){
+		int counter = 0;
+		while(wifiConnected == false){
 			std::cout << "Impossible to connect to known networks, switching to Access Point Mode" << std::endl;
 			message = "ERROR: Impossible to connect to known networks!";
-			connection_lost = 0;
-			esp_wifi_set_mode(WIFI_MODE_AP);
+			//esp_wifi_set_mode(WIFI_MODE_AP);
+			vTaskDelay(10000 / portTICK_PERIOD_MS);
+			std::cout << "Trying to reconnect... " << std::endl;
+			wifi_reconnect();
+			counter++;
+			if(counter == 30)
+				esp_restart();
 		}
-		else{
+		{
 			//std::thread t2(httpFetchAuthTokenTask);
 			//t2.join();
 			//JSON parsing of the data
@@ -1289,6 +1370,11 @@ void app_main(){
 					message = "ERROR: Unable to fetch configuration!";
 					connection_lost = 0;
 					esp_wifi_set_mode(WIFI_MODE_AP);
+					for (int i = 180; i >= 0; i--) {
+					std::cout << "Restarting in " << i << std::endl;
+			    	vTaskDelay(1000 / portTICK_PERIOD_MS);
+					}
+					esp_restart();
 				}
 			}
 			else{
@@ -1299,8 +1385,13 @@ void app_main(){
 				 */
 				ESP_LOGI(TAG, "Unable to fetch auth token, wifi set to AP mode");
 				message = "ERROR: Unable to fetch auth token!";
-				connection_lost=0;
+				connection_lost=0; //messo a zero visto che passare ad ap fa partire l'evento station disconnected
 				esp_wifi_set_mode(WIFI_MODE_AP);
+				for (int i = 180; i >= 0; i--) {
+					std::cout << "Restarting in " << i << std::endl;
+			    	vTaskDelay(1000 / portTICK_PERIOD_MS);
+					}
+					esp_restart();
 			}
 		}
 	}
