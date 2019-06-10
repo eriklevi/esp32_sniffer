@@ -374,7 +374,7 @@ std::string md5(const std::string str)
     return md5.hexdigest();
 }
 
-void md5(uint8_t* buffer, int size, uint8_t* hash){
+ void md5(uint8_t* buffer, int size, uint8_t* hash){
 	MD5 md5 = MD5(buffer, size);
 	md5.getHash(hash);
 }

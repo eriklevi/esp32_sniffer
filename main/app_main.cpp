@@ -16,6 +16,7 @@
 #include <cstdlib>
 #include <esp_http_server.h>
 #include "soc/rtc_cntl_reg.h"
+#include ""
 #include "md5.h"
 #include "lwip/apps/sntp.h"
 #include <sys/param.h>
@@ -72,8 +73,11 @@ int s_is_connected = 0;
 int connection_lost = 0;
 int first = 0;
 std::atomic<bool> mqtt_connection_lost;
+std::atomic<bool> wifi_connection_lost;
 bool mqtt_disconnection_thread_running = false;
 std::mutex mqtt_disconnection_mutex;
+bool wifi_disconnection_thread_running = false;
+std::mutex wifi_disconnection_mutex;
 struct mg_connection *nc;
 
 std::string configurationProxy = "0.0.0.0"; //default to avoid problems
@@ -88,7 +92,7 @@ bool dump_mode_bool = false;
 bool privacy_mode_bool = false;
 std::string broker_username;
 std::string broker_password;
-std::string topic_to_subscribe;
+std::string topic_to_publish;
 std::string lwt_message;
 std::string lwt_topic;
 std::string other_topic;
@@ -109,6 +113,7 @@ httpd_config_t config = HTTPD_DEFAULT_CONFIG();
 esp_mqtt_client_handle_t client1 = NULL;
 char data_buffer[2048];
 int data_len = 0;
+std::string message = "";
 
 
 extern "C"{
@@ -154,22 +159,52 @@ void set_mqtt_disconnection_thread_running(bool val){
 	mqtt_disconnection_thread_running = val;
 }
 
+bool get_wifi_disconnection_thread_running(){
+	std::lock_guard<std::mutex> lg(wifi_disconnection_mutex);
+	return wifi_disconnection_thread_running;
+}
+
+void set_wifi_disconnection_thread_running(bool val){
+	std::lock_guard<std::mutex> lg(wifi_disconnection_mutex);
+	wifi_disconnection_thread_running = val;
+}
+
 /**
  * Checks if the connection is re-established the restart the device accordingly.
  * This is needed in case of unknown behaviour to try to avoid losing too many data.
  */
 void mqttDisconnectionTask(){
-	vTaskDelay(120000 / portTICK_PERIOD_MS);
+	vTaskDelay(300000 / portTICK_PERIOD_MS);
 	if(mqtt_connection_lost.load()){
 		ESP_LOGI(TAG,"Restarting device after mqtt disconnection!");
 		esp_restart();
 	}
-	ESP_LOGI(TAG, "Coonection reestablished, disconnectionTask returning!");
+	ESP_LOGI(TAG, "Connection reestablished, disconnectionTask returning!");
 	set_mqtt_disconnection_thread_running(false);
 	return;		
 }
 
-void pkt_parser(uint8_t *payload, uint16_t size, uint8_t * buffer, uint8_t *ssid, int *ssid_size)
+void wifiDisconnectionTask(){
+	ESP_LOGI(TAG, "Started Wifi disconnection task");
+	vTaskDelay(300000 / portTICK_PERIOD_MS);
+	if(wifi_connection_lost.load()){
+		ESP_LOGI(TAG,"Restarting device after wifi disconnection!");
+		esp_restart();
+	}
+	ESP_LOGI(TAG, "Connection reestablished, disconnectionTask returning!");
+	set_wifi_disconnection_thread_running(false);
+	return;		
+}
+
+/**
+ * This function parses the received probe request and calculate the fingerprint.
+ * payload -> pointer to packet payload
+ * size -> size of payload
+ * buffer -> stores the fp
+ * ssid -> stores the advertised ssid if present
+ * ssid_size -> stores the length of ssid
+ */
+void pkt_parser(uint8_t *payload, uint16_t size, uint8_t * buffer, uint8_t *ssid, uint8_t *ssid_size)
 {
 	//len = in the end it contains the length of payload without eventual SSID tag
 	uint16_t len;
@@ -177,7 +212,7 @@ void pkt_parser(uint8_t *payload, uint16_t size, uint8_t * buffer, uint8_t *ssid
 	int tag_c = 0;
 	int tag = 0;
 	int tag_size = 0;
-	//first 2 bytes are not useful
+	//first 2 bytes are sequence number
 	int i = 2;
 	int offset = 0;
 	int data_len;
@@ -188,15 +223,17 @@ void pkt_parser(uint8_t *payload, uint16_t size, uint8_t * buffer, uint8_t *ssid
 	uint8_t *tagData = (uint8_t*)malloc(size*sizeof(uint8_t));
 	tag_size = payload[3];
 	len = size;
-	//std::cout << std::endl;
-	//std::cout << "len -> " << len << std::endl;
+	std::cout << std::endl;
+	std::cout << "len -> " << len << std::endl;
 	/**
 	 * Parsing
 	 */
-//	std::cout << "payload -> " << std::endl;
-//		for(int j = 0; j < size; j++)
-//			printf("%02X", payload[j]);
-//		std::cout << std::endl;
+
+	/* 
+	std::cout << "payload -> " << std::endl;
+		for(int j = 0; j < size; j++)
+			printf("%02X", payload[j]);
+		std::cout << std::endl;*/
 	while(i < size){
 		tag = payload[i];
 		//std::cout << "tag -> " << tag << std::endl;
@@ -233,7 +270,7 @@ void pkt_parser(uint8_t *payload, uint16_t size, uint8_t * buffer, uint8_t *ssid
 				len -= tag_size;
 				//we copy the ssid in the ssid buffer
 				memcpy(ssid, &payload[i], tag_size);
-				*ssid_size = tag_size;
+				*ssid_size = payload[i-1];
 //				std::cout << "lunghezza tag 00 -> " << tag_size << std::endl;
 //				std::cout << "len -> " << len << std::endl;
 //				//dobbiamo aggiornare i!!!
@@ -244,13 +281,14 @@ void pkt_parser(uint8_t *payload, uint16_t size, uint8_t * buffer, uint8_t *ssid
 		}
 		/**
 		 * in case of a tag of the following we save the payload inside tag data to produce the hash
-		 * DD == 221
-		 * 01 == 1
-		 * 32 == 50
-		 * 7F == 127
-		 * 2D == 45
+		 * DD == 221 Vendor specific IE
+		 * 01 == 1 supported rates
+		 * 32 == 50 extended supported rates
+		 * 7F == 127 extended capabilities
+		 * 2D == 45 ht capabilities
+		 * BF == 191 vht capabilities
 		 */
-		if(tag == 221 || tag == 1 || tag == 50 || tag == 127 || tag == 45){
+		if(tag == 221 || tag == 1 || tag == 50 || tag == 127 || tag == 45 || tag == 191){
 			memcpy(tagData+offset, &payload[i], tag_size*sizeof(uint8_t));
 			offset += tag_size;
 		}
@@ -262,17 +300,18 @@ void pkt_parser(uint8_t *payload, uint16_t size, uint8_t * buffer, uint8_t *ssid
 	memcpy(data, &len, sizeof(uint16_t));
 	memcpy(data+sizeof(uint16_t), str_tags, tag_c*sizeof(uint8_t));
 	memcpy(data+sizeof(uint16_t)+tag_c*sizeof(uint8_t), tagData, offset*sizeof(uint8_t));
-	std::cout << "tag list -> " << std::endl;
-	for(int j = 0; j < data_len; j++)
-		printf("%02X", data[j]);
-	std::cout << std::endl;
+	//std::cout << "tag list -> " << std::endl;
+	//for(int j = 0; j < data_len; j++)
+		//printf("%02X", data[j]);
+	//std::cout << std::endl;
 	md5(data, data_len, buffer);
 	free(data);
 	free(tagData);
+	std::cout << "finito parser" << std::endl;
 }
 
-void get_ssid_from_payload(uint8_t* data,uint8_t* ssid,int *ssid_size){
-	int tag_len = 0;
+void get_ssid_from_payload(uint8_t* data,uint8_t* ssid,uint8_t *ssid_size){
+	uint8_t tag_len = 0;
 	if(data[2] == 0){
 		tag_len = data[3];
 		memcpy(ssid, &data[4], tag_len*sizeof(uint8_t));
@@ -408,24 +447,35 @@ void wifi_sniffer_cb(void *recv_buf, wifi_promiscuous_pkt_type_t type)
 {
 	uint8_t buffer[16];
 	uint8_t ssid[32];
-	int ssid_size = 0;
+	uint8_t ssid_size = 0;
 	wifi_promiscuous_pkt_t *sniffer = (wifi_promiscuous_pkt_t *)recv_buf;
 	sniffer_payload_t *sniffer_payload = (sniffer_payload_t *)sniffer->payload;
 	uint8_t *data = sniffer_payload->payload;
-	//len rappresenta la lunghezza del payload + i 4 byte finali di check
+	//len rappresenta la lunghezza totale di header + payload(seq + tagged parameters) + i 4 byte finali di check
 	uint16_t len =  sniffer->rx_ctrl.sig_len;
+	
 
-    /*bisogna togliere i 24 byte dell'header + gli ultimi 4 di check
-     * 4 byte header
+    /*bisogna togliere i 22 byte dell'header + gli ultimi 4 di check
+     * ------------------- Header
+	 * 4 byte header
      * 6 byte rec mac
      * 6 byte dest mac
      * 6 bssid
-     * 2 byte sequence number totale 24
-     *
-     * + 4 di check alla fine
+     * ------------------- Payload
+	 * D021 <---- sequence number
+	 * 0000 
+	 * 010882848B0C12961824
+	 * 030102
+	 * 32043048606C
+	 * 2D1A6D1117FF00000000000000000000000100000000000004060A00
+	 * 7F080000008000000000
+	 * (output preso da stampa di debug di paket parser)
+	 * --------------------->  fine tagged parameters
+	 * 4 di check alla fine
+	 * 
+	 * totale da togliere per avere solo la lunghezza del payload del pacchetto (tagged params + seq) = 26
      */
 	uint16_t payload_len = len - 26;
-	//il sequence number è dentro il payload quindi se faccio -28 lo conto due volte visto che inizio a fare il parsing del pacchetto a partire da i=2
 
 	/* Check if the packet is Probe Request  */
 	//0100 è il codice corrispondente al probe request
@@ -433,14 +483,14 @@ void wifi_sniffer_cb(void *recv_buf, wifi_promiscuous_pkt_type_t type)
 		return;
 	}
 
-	/* Filter out some useless packet
-	for (int i = 0; i < 32; ++i) {
-		if (!memcmp(sniffer_payload->source_mac, esp_module_mac[i], 3)) {
-			return;
-		}
-	}*/
+	std::cout << "len" << len << std::endl;
+	std::cout << "payload -> " << std::endl;
+		for(int j = 0; j < len-22; j++)
+			printf("%02X", data[j]);
+		std::cout << std::endl;
 
-	
+
+
 	if(sniffer->rx_ctrl.rssi < power_thrashold){
 		std::cout << "pacchetto scartato potenza " << sniffer->rx_ctrl.rssi << std::endl;
 		return;
@@ -451,6 +501,7 @@ void wifi_sniffer_cb(void *recv_buf, wifi_promiscuous_pkt_type_t type)
 
 	if(dump_mode_bool){
 		//mandiamo i pacchetti immediatamente
+
 		int totalSize = 6+len;
 		char* data_buffer = (char*) malloc(totalSize*sizeof(uint8_t));
 		memcpy(data_buffer, mac, 6*sizeof(uint8_t));
@@ -459,25 +510,33 @@ void wifi_sniffer_cb(void *recv_buf, wifi_promiscuous_pkt_type_t type)
 		free(data_buffer);
 	}else{
 		if((sniffer_payload->source_mac[0] & test) == 0){
+			std::cout << "pacchetto global" << std::endl;
 			//Global MAC address
 			std::shared_ptr<ProbeRequestData> p = std::make_shared<ProbeRequestData>();
 			get_ssid_from_payload(data, ssid, &ssid_size);
-			p->setGlobalMac(0);
-			p->setAppleSpecificTag(0);
+			p->setSequenceNumber(data);
+			//p->setGlobalMac(0);
+			//p->setAppleSpecificTag(0);
+			p->setFCS(data, len-22);
 			p->setFingerprintLen(0);
 			p->setDeviceMAC((unsigned char *)sniffer_payload->source_mac, 6);
 			p->setSignalStrength((signed char)sniffer->rx_ctrl.rssi);
 			p->setSSID(ssid, ssid_size);
 			sq->pushBack(p);
+			E01A0000010802040B160C12182432043048606C0000D5B1
 		}
 		else{
+			std::cout << "pacchetto local" << std::endl;
 			pkt_parser(data, payload_len, buffer, ssid, &ssid_size);
 			std::shared_ptr<ProbeRequestData> p = std::make_shared<ProbeRequestData>();
-			p->setGlobalMac(1);
-			p->setAppleSpecificTag(0);
+			//p->setGlobalMac(1);
+			//p->setAppleSpecificTag(0);
+			p->setSequenceNumber(data);
 			p->setDeviceMAC((unsigned char *)sniffer_payload->source_mac, 6);
 			p->setSignalStrength((signed char)sniffer->rx_ctrl.rssi);
 			p->setFingerprint(buffer, 16);
+			p->setFingerprintLen(16);
+			p->setFCS(data, len-22);
 			p->setSSID(ssid, ssid_size);
 			sq->pushBack(p);
 		}
@@ -547,7 +606,7 @@ static esp_err_t mqtt_event_handler(esp_mqtt_event_handle_t event)
 		s_is_connected = 0;
 		//stop promiscous mode
 		if(first == 0){
-			ESP_LOGI(TAG, "Stopping promiscous mode, device will restart in 2 minutes unless connection is reestablished");
+			ESP_LOGI(TAG, "Stopping promiscous mode, device will restart unless connection is reestablished");
 			ESP_ERROR_CHECK(esp_wifi_set_promiscuous(0));
 			first = 1;
 			if(!get_mqtt_disconnection_thread_running()){
@@ -600,7 +659,9 @@ static esp_err_t wifi_event_handler(void *ctx, system_event_t *event)
 		case SYSTEM_EVENT_STA_GOT_IP:
 			ESP_LOGI(TAG, "Lanciato evento station gotip!");
 			xEventGroupSetBits(wifi_event_group, CONNECTED_BIT);
+			wifiConnected = true;
 			connection_lost = 1;
+			wifi_connection_lost.store(false);
 			if (!g_station_list) {
 				g_station_list = (station_info_t*)malloc(sizeof(station_info_t));
 				g_station_list->next = NULL;
@@ -611,12 +672,20 @@ static esp_err_t wifi_event_handler(void *ctx, system_event_t *event)
 			ESP_LOGI(TAG, "Lanciato evento station disconnected!");
 			if(connection_lost == 1){
 				connection_lost = 0;
-				for (int i = 3; i >= 0; i--) {
+				/*for (int i = 3; i >= 0; i--) {
 					std::cout << " Wifi connection lost, restarting in " << i << std::endl;
 			    	vTaskDelay(1000 / portTICK_PERIOD_MS);
 				}
-				esp_restart();
+				esp_restart();*/
+				if(!get_wifi_disconnection_thread_running()){
+					set_wifi_disconnection_thread_running(true);
+					std::thread wifi_disconnection_thread(wifiDisconnectionTask);
+					wifi_disconnection_thread.detach();
+				}	
 			}
+			wifi_connection_lost.store(true);
+			vTaskDelay(10000/portTICK_PERIOD_MS);
+			esp_wifi_connect();
 			break;
 		default:
 			break;
@@ -679,7 +748,7 @@ static void wifi_init_sta()
 }
 */
 
-static void wifi_init(){
+	static void wifi_init(){
 	EventBits_t uxBits;
 	//trying to connect to each station for 10 seconds
 	const TickType_t xTicksToWait = 10000 / portTICK_PERIOD_MS;
@@ -693,7 +762,7 @@ static void wifi_init(){
 	esp_wifi_set_mode(WIFI_MODE_APSTA);
 	wifi_config_t ap_config = {};
 	ap_config.ap = {};
-	std::string name = "SNIFFER_" + deviceName + "_CONFIG";
+	std::string name = deviceName + "_CONFIG";
 	memcpy(ap_config.ap.ssid, name.c_str(), name.length());
 	memcpy(ap_config.ap.password,"password1234",12);
 	ap_config.ap.channel = 0;
@@ -704,6 +773,32 @@ static void wifi_init(){
 	esp_wifi_set_config(WIFI_IF_AP, &ap_config);
 	ap_config.sta = {};
 	ESP_ERROR_CHECK(esp_wifi_start());
+	for (std::list<std::shared_ptr<WifiAccessPoint>>::const_iterator iterator = list->begin(), end = list->end(); iterator != end; ++iterator) {
+		std::shared_ptr<WifiAccessPoint> p = *iterator;
+		memcpy(ap_config.sta.ssid, p->getSSID(), p->getSSIDLength());
+		memcpy(ap_config.sta.password, p->getPassword(), p->getPasswordLength());
+		ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_STA, &ap_config));
+		std::cout << "Trying to connect to " << p->getSSIDAsString() << std::endl;
+		ESP_LOGI(TAG, "Waiting for wifi");
+		ESP_ERROR_CHECK(esp_wifi_connect());
+		uxBits = xEventGroupWaitBits(wifi_event_group, CONNECTED_BIT, false, true, xTicksToWait);
+		if( ( uxBits & CONNECTED_BIT ) != 0 ) {
+			std::cout << "Connected!" << std::endl;
+			//check if xEventGroupWaitBits returned for wifi successfully connected or not
+			wifiConnected = true;
+			break;
+		}
+		else{
+			std::cout << "Failed to connect, trying next network" << std::endl;
+			ESP_ERROR_CHECK(esp_wifi_disconnect());
+		}
+	}
+}
+
+static void wifi_reconnect(){
+	wifi_config_t ap_config = {};
+	EventBits_t uxBits;
+	const TickType_t xTicksToWait = 10000 / portTICK_PERIOD_MS;
 	for (std::list<std::shared_ptr<WifiAccessPoint>>::const_iterator iterator = list->begin(), end = list->end(); iterator != end; ++iterator) {
 		std::shared_ptr<WifiAccessPoint> p = *iterator;
 		memcpy(ap_config.sta.ssid, p->getSSID(), p->getSSIDLength());
@@ -740,7 +835,7 @@ static void mqtt_app_start(void)
 	mqtt_cfg.password = broker_password.c_str();
 	mqtt_cfg.lwt_qos = 0;
 	mqtt_cfg.lwt_retain = 0;
-	mqtt_cfg.keepalive = 120;
+	mqtt_cfg.keepalive = 60;
 	std::cout << mqtt_cfg.host << std::endl;
 	client1 = esp_mqtt_client_init(&mqtt_cfg);
     esp_mqtt_client_start(client1);
@@ -752,26 +847,28 @@ static void mqtt_app_start(void)
  */
 
 void mqtt_task(){
-	uint8_t dataToSend[63];
+	uint8_t dataToSend[68];
 	int length = 0;
 	/*
 	 * dataToSend content:
-	 *  6 bytes -> probe request device mac
-	 * 16 bytes -> fingerprint
-	 *  1 byte  -> signal strength
-	 *  6 bytes -> station mac
-	 * 32 bytes -> eventual ssid
-	 *  total = 61 bytes
+	 *  6 bytes -> sniffer mac
+	 *  6 bytes -> device mac
+	 * 	2 bytes -> sequence number
+	 *  1 byte  -> rssi
+	 *  1 byte -> ssid len
+	 * 	4 byte -> fcs
+	 *  32 bytes -> eventual ssid
+	 *  16 bytes -> fingerprint
+	 *  total = 68 bytes
 	 */
 	std::shared_ptr<ProbeRequestData> prd(NULL);
 	while (1) {
-		/*dataToSend[0] = data_type_bin;
-				dataToSend[1] = len >> 8;
-				dataToSend[2] = len & 0xFF;*/
 		if(!sq->checkEmpty()){
 			prd = sq->popFront();
 			length = prd->getDataBuffer(dataToSend, mac);
-			esp_mqtt_client_publish(client1, "topic", (char*)dataToSend, length, 0, 0);
+
+			esp_mqtt_client_publish(client1, topic_to_publish.c_str(), (char*)dataToSend, length, 0, 0);
+			std::cout << "publicato" << std::endl;
 		}
 		else{
 			//task sleeps for 100 ms if the queue is empty
@@ -788,12 +885,14 @@ void httpFetchAuthTokenTask(){
 	out_string = ss.str();
 	std::string url = "http://" + configurationProxy +":"+ out_string + "/auth/oauth/token";
 	config.url = url.c_str();
-	config.host = configurationProxy.c_str();
-	config.port = configurationProxyPort;
-	config.path = "auth/oauth/token";
+	//config.host = configurationProxy.c_str();
+	//config.port = configurationProxyPort;
+	//config.path = "auth/oauth/token";
 	config.method = HTTP_METHOD_POST;
 	config.event_handler = HttpRequestsHandler;
 	config.max_redirection_count = 100;
+	config.disable_auto_redirect = false;
+	config.buffer_size = 2048;
 	std:: cout << config.url << std::endl;
 	esp_http_client_handle_t client = esp_http_client_init(&config);
 	//Request header setup
@@ -915,7 +1014,7 @@ esp_err_t hello_get_handler(httpd_req_t *req)
     /* Send response with custom headers and body set as the
      * string passed in user context*/
     //const char* resp_str = (const char*) req->user_ctx;
-    std::string responseHtml = *getHomePage(list, configurationProxy, mac, configurationProxyPort);
+    std::string responseHtml = *getHomePage(list, configurationProxy, mac, configurationProxyPort, message);
     const char* resp_str = responseHtml.c_str();
     httpd_resp_send(req, resp_str, strlen(resp_str));
 
@@ -963,17 +1062,20 @@ esp_err_t echo_post_handler(httpd_req_t *req)
     switch(res){
 		case 0:{
 			//tutto ok
-			std::string responseHtml = *getHomePageCustomMessage(list, configurationProxy, std::string("Please, reset the device!"));
+			message = "Reset the device to use the new configuration!";
+			std::string responseHtml = *getHomePage(list, configurationProxy, mac, configurationProxyPort, message);
 			const char* resp_str = responseHtml.c_str();
 			httpd_resp_send(req, resp_str, strlen(resp_str));
 			break;
 		}
 		case 1:{
-			std::string responseHtml = *getHomePageCustomMessage(list, configurationProxy, std::string("Invalid SSID or password!"));
+			message = "Invalid SSID or password!";
+			std::string responseHtml = *getHomePage(list, configurationProxy, mac, configurationProxyPort, message);
 			break;
 		}
 		case 2:{
-			std::string responseHtml = *getHomePageCustomMessage(list, configurationProxy, std::string("Invalid ws address!"));
+			message = "Invalid address!";
+			std::string responseHtml = *getHomePage(list, configurationProxy, mac, configurationProxyPort,  message);
 			break;
 		}
     }
@@ -1106,19 +1208,33 @@ void app_main(){
 	 * Iterating over saved AP, stting wifiConnected to true if connection is successfull
 	 * otherwise switch to access point mode and set up http server to change setup
 	 */
+	wifi_connection_lost.store(false);
+	connection_lost = 0;
 	wifi_init();
 	server = startHttpServer();
 	if(server == NULL){
 		//An error occurred during http server initialization
 		std::cout << "An error occurred during http server initialization" << std::endl;
+		for (int i = 10; i >= 0; i--) {
+					std::cout << "Restarting in " << i << std::endl;
+			    	vTaskDelay(1000 / portTICK_PERIOD_MS);
+				}
+				esp_restart();
 	}
 	else{
-		if(wifiConnected == false){
+		int counter = 0;
+		while(wifiConnected == false){
 			std::cout << "Impossible to connect to known networks, switching to Access Point Mode" << std::endl;
-			connection_lost = 0;
-			esp_wifi_set_mode(WIFI_MODE_AP);
+			message = "ERROR: Impossible to connect to known networks!";
+			//esp_wifi_set_mode(WIFI_MODE_AP);
+			vTaskDelay(10000 / portTICK_PERIOD_MS);
+			std::cout << "Trying to reconnect... " << std::endl;
+			wifi_reconnect();
+			counter++;
+			if(counter == 30)
+				esp_restart();
 		}
-		else{
+		{
 			//std::thread t2(httpFetchAuthTokenTask);
 			//t2.join();
 			//JSON parsing of the data
@@ -1159,7 +1275,7 @@ void app_main(){
 				cJSON *privacy_mode = NULL;
 				cJSON *broker_address = NULL;
 				cJSON *broker_port = NULL;
-				cJSON *topic_to_subscribe_JSON = NULL;
+				cJSON *topic_to_publish_JSON = NULL;
 				cJSON *lwt_message_JSON = NULL;
 				cJSON *lwt_topic_JSON = NULL;
 				cJSON *power_thrashold_JSON = NULL;
@@ -1211,12 +1327,12 @@ void app_main(){
 						brokerPort = 1883;
 					}
 					//
-					topic_to_subscribe_JSON = cJSON_GetObjectItemCaseSensitive(root, "topic");
-					if(cJSON_IsString(topic_to_subscribe_JSON) && topic_to_subscribe_JSON->valuestring != NULL){
-						topic_to_subscribe = topic_to_subscribe_JSON->valuestring;
-						ESP_LOGI(TAG, "Topic to subscribe: %s", topic_to_subscribe.c_str());
+					topic_to_publish_JSON = cJSON_GetObjectItemCaseSensitive(root, "topic");
+					if(cJSON_IsString(topic_to_publish_JSON) && topic_to_publish_JSON->valuestring != NULL){
+						topic_to_publish = topic_to_publish_JSON->valuestring;
+						ESP_LOGI(TAG, "Topic to publish: %s", topic_to_publish.c_str());
 					} else{
-						ESP_LOGE(TAG, "Error in JSON parsing: unable to get topic to subscribe!");
+						ESP_LOGE(TAG, "Error in JSON parsing: unable to get topic to publish!");
 						httpRequestSuccess = false;
 					}
 					//
@@ -1265,8 +1381,14 @@ void app_main(){
 				}
 				else{
 					ESP_LOGI(TAG, "Unable to fetch configuration, wifi set to AP mode");
+					message = "ERROR: Unable to fetch configuration!";
 					connection_lost = 0;
 					esp_wifi_set_mode(WIFI_MODE_AP);
+					for (int i = 180; i >= 0; i--) {
+					std::cout << "Restarting in " << i << std::endl;
+			    	vTaskDelay(1000 / portTICK_PERIOD_MS);
+					}
+					esp_restart();
 				}
 			}
 			else{
@@ -1275,9 +1397,15 @@ void app_main(){
 				 * an error occurred, it's better to return in manual configuration mode
 				 * to allow to change the configuration server address
 				 */
-				ESP_LOGI(TAG, "Unable to fetch configuration, wifi set to AP mode");
-				connection_lost=0;
+				ESP_LOGI(TAG, "Unable to fetch auth token, wifi set to AP mode");
+				message = "ERROR: Unable to fetch auth token!";
+				connection_lost=0; //messo a zero visto che passare ad ap fa partire l'evento station disconnected
 				esp_wifi_set_mode(WIFI_MODE_AP);
+				for (int i = 180; i >= 0; i--) {
+					std::cout << "Restarting in " << i << std::endl;
+			    	vTaskDelay(1000 / portTICK_PERIOD_MS);
+					}
+					esp_restart();
 			}
 		}
 	}

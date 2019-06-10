@@ -25,7 +25,6 @@
 #include <cstring>
 #include <sstream>
 
-std::shared_ptr<std::string> getHomePage(std::list<std::shared_ptr<WifiAccessPoint>> *list, std::string broker, uint8_t* mac, int port);
-std::shared_ptr<std::string> getHomePageCustomMessage(std::list<std::shared_ptr<WifiAccessPoint>> *list, std::string ws_server, std::string message);
+std::shared_ptr<std::string> getHomePage(std::list<std::shared_ptr<WifiAccessPoint>> *list, std::string broker, uint8_t* mac, int port, std::string message);
 
 #endif /* MAIN_HTMLPAGE_H_ */
