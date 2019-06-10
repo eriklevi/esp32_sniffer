@@ -55,10 +55,11 @@ int ProbeRequestData::getDataBuffer(uint8_t *buffer, uint8_t *sniffer_mac){
 	memcpy(buffer + (6*sizeof(uint8_t)), this->deviceMAC , 6*sizeof(uint8_t));
 	memcpy(buffer + 12*sizeof(uint8_t), &this->sequence_number, sizeof(uint16_t));
 	memcpy(buffer + 12*sizeof(uint8_t) + sizeof(uint16_t), &this->signalStrength, sizeof(int8_t));
-	memcpy(buffer + 12*sizeof(uint8_t) + sizeof(uint16_t) + sizeof(int8_t), &this->ssid_len, sizeof(uint8_t));
-	memcpy(buffer + 13*sizeof(uint8_t) + sizeof(uint16_t) + sizeof(int8_t), this->ssid, this->ssid_len*sizeof(uint8_t));
-	memcpy(buffer + 13*sizeof(uint8_t) + this->ssid_len*sizeof(uint8_t) + sizeof(uint16_t) + sizeof(int8_t), this->fingerprint, this->fingerprint_len*sizeof(uint8_t));
-	return 16 + this->ssid_len + this->fingerprint_len;
+	memcpy(buffer + 12*sizeof(uint8_t) + sizeof(uint16_t) + sizeof(int8_t), this->fcs, 4);
+	memcpy(buffer + 16*sizeof(uint8_t) + sizeof(uint16_t) + sizeof(int8_t), &this->ssid_len, sizeof(uint8_t));
+	memcpy(buffer + 17*sizeof(uint8_t) + sizeof(uint16_t) + sizeof(int8_t), this->ssid, this->ssid_len*sizeof(uint8_t));
+	memcpy(buffer + 17*sizeof(uint8_t) + this->ssid_len*sizeof(uint8_t) + sizeof(uint16_t) + sizeof(int8_t), this->fingerprint, this->fingerprint_len*sizeof(uint8_t));
+	return 20 + this->ssid_len + this->fingerprint_len;
 }
 void ProbeRequestData::setSSID(uint8_t *source, uint8_t size){
 	memcpy((void*)this->ssid, source, size);
@@ -84,6 +85,6 @@ void ProbeRequestData::setSequenceNumber(uint8_t* number){
 	memcpy(&this->sequence_number, number, 2);
 }
 void ProbeRequestData::setFCS(uint8_t* data, uint16_t data_len){
-	memcpy(&this->fcs, &data[data_len - 4], 4);
+	memcpy(this->fcs, &data[data_len - 4], 4);
 }
 

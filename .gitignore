@@ -2,3 +2,5 @@
 .vscode/*
 main/.vscode/*
 ._.DS_Store
+sdkconfig.old
+.DS_Store

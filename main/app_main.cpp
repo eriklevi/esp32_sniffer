@@ -16,6 +16,7 @@
 #include <cstdlib>
 #include <esp_http_server.h>
 #include "soc/rtc_cntl_reg.h"
+#include ""
 #include "md5.h"
 #include "lwip/apps/sntp.h"
 #include <sys/param.h>
@@ -227,10 +228,12 @@ void pkt_parser(uint8_t *payload, uint16_t size, uint8_t * buffer, uint8_t *ssid
 	/**
 	 * Parsing
 	 */
+
+	/* 
 	std::cout << "payload -> " << std::endl;
 		for(int j = 0; j < size; j++)
 			printf("%02X", payload[j]);
-		std::cout << std::endl;
+		std::cout << std::endl;*/
 	while(i < size){
 		tag = payload[i];
 		//std::cout << "tag -> " << tag << std::endl;
@@ -450,6 +453,7 @@ void wifi_sniffer_cb(void *recv_buf, wifi_promiscuous_pkt_type_t type)
 	uint8_t *data = sniffer_payload->payload;
 	//len rappresenta la lunghezza totale di header + payload(seq + tagged parameters) + i 4 byte finali di check
 	uint16_t len =  sniffer->rx_ctrl.sig_len;
+	
 
     /*bisogna togliere i 22 byte dell'header + gli ultimi 4 di check
      * ------------------- Header
@@ -479,6 +483,14 @@ void wifi_sniffer_cb(void *recv_buf, wifi_promiscuous_pkt_type_t type)
 		return;
 	}
 
+	std::cout << "len" << len << std::endl;
+	std::cout << "payload -> " << std::endl;
+		for(int j = 0; j < len-22; j++)
+			printf("%02X", data[j]);
+		std::cout << std::endl;
+
+
+
 	if(sniffer->rx_ctrl.rssi < power_thrashold){
 		std::cout << "pacchetto scartato potenza " << sniffer->rx_ctrl.rssi << std::endl;
 		return;
@@ -505,12 +517,13 @@ void wifi_sniffer_cb(void *recv_buf, wifi_promiscuous_pkt_type_t type)
 			p->setSequenceNumber(data);
 			//p->setGlobalMac(0);
 			//p->setAppleSpecificTag(0);
-			p->setFCS(data, len);
+			p->setFCS(data, len-22);
 			p->setFingerprintLen(0);
 			p->setDeviceMAC((unsigned char *)sniffer_payload->source_mac, 6);
 			p->setSignalStrength((signed char)sniffer->rx_ctrl.rssi);
 			p->setSSID(ssid, ssid_size);
 			sq->pushBack(p);
+			E01A0000010802040B160C12182432043048606C0000D5B1
 		}
 		else{
 			std::cout << "pacchetto local" << std::endl;
@@ -523,7 +536,7 @@ void wifi_sniffer_cb(void *recv_buf, wifi_promiscuous_pkt_type_t type)
 			p->setSignalStrength((signed char)sniffer->rx_ctrl.rssi);
 			p->setFingerprint(buffer, 16);
 			p->setFingerprintLen(16);
-			p->setFCS(data, len);
+			p->setFCS(data, len-22);
 			p->setSSID(ssid, ssid_size);
 			sq->pushBack(p);
 		}
@@ -834,7 +847,7 @@ static void mqtt_app_start(void)
  */
 
 void mqtt_task(){
-	uint8_t dataToSend[64];
+	uint8_t dataToSend[68];
 	int length = 0;
 	/*
 	 * dataToSend content:
@@ -843,9 +856,10 @@ void mqtt_task(){
 	 * 	2 bytes -> sequence number
 	 *  1 byte  -> rssi
 	 *  1 byte -> ssid len
+	 * 	4 byte -> fcs
 	 *  32 bytes -> eventual ssid
 	 *  16 bytes -> fingerprint
-	 *  total = 64 bytes
+	 *  total = 68 bytes
 	 */
 	std::shared_ptr<ProbeRequestData> prd(NULL);
 	while (1) {

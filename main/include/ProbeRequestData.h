@@ -39,7 +39,7 @@ private:
 	uint8_t global_mac;
 	uint8_t apple_specific_tag;
 	uint16_t sequence_number;
-	uint32_t fcs;
+	uint8_t fcs[4];
 };
 
 #endif /* MAIN_PROBEREQUESTDATA_H_ */
