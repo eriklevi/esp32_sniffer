@@ -17,6 +17,7 @@
 #include <mutex>
 #include <atomic>
 #include <iostream>
+#include <iomanip>
 #include <thread>
 #include <ctime>
 #include <memory>
@@ -24,6 +25,7 @@
 #include <sstream>
 #include <string>
 #include <cstdlib>
+#include "esp32/rom/crc.h"
 
 ProbeRequestData::ProbeRequestData() {
 	this->fingerprint_len = 0;
@@ -55,7 +57,7 @@ int ProbeRequestData::getDataBuffer(uint8_t *buffer, uint8_t *sniffer_mac){
 	memcpy(buffer + (6*sizeof(uint8_t)), this->deviceMAC , 6*sizeof(uint8_t));
 	memcpy(buffer + 12*sizeof(uint8_t), &this->sequence_number, sizeof(uint16_t));
 	memcpy(buffer + 12*sizeof(uint8_t) + sizeof(uint16_t), &this->signalStrength, sizeof(int8_t));
-	memcpy(buffer + 12*sizeof(uint8_t) + sizeof(uint16_t) + sizeof(int8_t), this->fcs, 4);
+	memcpy(buffer + 12*sizeof(uint8_t) + sizeof(uint16_t) + sizeof(int8_t), &this->fcs, 4);
 	memcpy(buffer + 16*sizeof(uint8_t) + sizeof(uint16_t) + sizeof(int8_t), &this->ssid_len, sizeof(uint8_t));
 	memcpy(buffer + 17*sizeof(uint8_t) + sizeof(uint16_t) + sizeof(int8_t), this->ssid, this->ssid_len*sizeof(uint8_t));
 	memcpy(buffer + 17*sizeof(uint8_t) + this->ssid_len*sizeof(uint8_t) + sizeof(uint16_t) + sizeof(int8_t), this->fingerprint, this->fingerprint_len*sizeof(uint8_t));
@@ -85,6 +87,7 @@ void ProbeRequestData::setSequenceNumber(uint8_t* number){
 	memcpy(&this->sequence_number, number, 2);
 }
 void ProbeRequestData::setFCS(uint8_t* data, uint16_t data_len){
-	memcpy(this->fcs, &data[data_len - 4], 4);
+	this->fcs = crc32_le(0, data, data_len);
+	std::cout << std::setfill('0') << std::setw(8) << std::hex << this->fcs <<std::endl;
 }
 

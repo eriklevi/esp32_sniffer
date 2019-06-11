@@ -14,9 +14,9 @@
 #include <sstream>
 #include <string>
 #include <cstdlib>
+#include <iomanip>
 #include <esp_http_server.h>
 #include "soc/rtc_cntl_reg.h"
-#include ""
 #include "md5.h"
 #include "lwip/apps/sntp.h"
 #include <sys/param.h>
@@ -448,8 +448,11 @@ void wifi_sniffer_cb(void *recv_buf, wifi_promiscuous_pkt_type_t type)
 	uint8_t buffer[16];
 	uint8_t ssid[32];
 	uint8_t ssid_size = 0;
+	//pacchetto compreso di header inseriti da esp 32 e pacchetto catturato
 	wifi_promiscuous_pkt_t *sniffer = (wifi_promiscuous_pkt_t *)recv_buf;
+	//pacchetto con header + payload del pacchetto
 	sniffer_payload_t *sniffer_payload = (sniffer_payload_t *)sniffer->payload;
+	//dati contenuti nel pacchetto, nel caso di P.R. abbiamo seqn + tagged parameters + fcs
 	uint8_t *data = sniffer_payload->payload;
 	//len rappresenta la lunghezza totale di header + payload(seq + tagged parameters) + i 4 byte finali di check
 	uint16_t len =  sniffer->rx_ctrl.sig_len;
@@ -482,11 +485,11 @@ void wifi_sniffer_cb(void *recv_buf, wifi_promiscuous_pkt_type_t type)
 	if (sniffer_payload->header[0] != 0x40) {
 		return;
 	}
-
-	std::cout << "len" << len << std::endl;
+/* 
+	std::cout << "len " << std::dec << len << std::endl;*/
 	std::cout << "payload -> " << std::endl;
-		for(int j = 0; j < len-22; j++)
-			printf("%02X", data[j]);
+		for(int j = 0; j < len; j++)
+			printf("%02X", sniffer->payload[j]);
 		std::cout << std::endl;
 
 
@@ -517,13 +520,13 @@ void wifi_sniffer_cb(void *recv_buf, wifi_promiscuous_pkt_type_t type)
 			p->setSequenceNumber(data);
 			//p->setGlobalMac(0);
 			//p->setAppleSpecificTag(0);
-			p->setFCS(data, len-22);
+			p->setFCS(sniffer->payload, len-4);
 			p->setFingerprintLen(0);
 			p->setDeviceMAC((unsigned char *)sniffer_payload->source_mac, 6);
 			p->setSignalStrength((signed char)sniffer->rx_ctrl.rssi);
 			p->setSSID(ssid, ssid_size);
 			sq->pushBack(p);
-			E01A0000010802040B160C12182432043048606C0000D5B1
+			//E01A0000010802040B160C12182432043048606C0000D5B1
 		}
 		else{
 			std::cout << "pacchetto local" << std::endl;
@@ -536,7 +539,7 @@ void wifi_sniffer_cb(void *recv_buf, wifi_promiscuous_pkt_type_t type)
 			p->setSignalStrength((signed char)sniffer->rx_ctrl.rssi);
 			p->setFingerprint(buffer, 16);
 			p->setFingerprintLen(16);
-			p->setFCS(data, len-22);
+			p->setFCS(sniffer->payload, len-4);
 			p->setSSID(ssid, ssid_size);
 			sq->pushBack(p);
 		}

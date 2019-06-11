@@ -9,6 +9,7 @@
 #define MAIN_PROBEREQUESTDATA_H_
 
 #include <cstdint>
+#include "rom/crc.h"
 
 class ProbeRequestData {
 public:
@@ -39,7 +40,7 @@ private:
 	uint8_t global_mac;
 	uint8_t apple_specific_tag;
 	uint16_t sequence_number;
-	uint8_t fcs[4];
+	uint32_t fcs;
 };
 
 #endif /* MAIN_PROBEREQUESTDATA_H_ */
