@@ -486,12 +486,12 @@ void wifi_sniffer_cb(void *recv_buf, wifi_promiscuous_pkt_type_t type)
 		return;
 	}
 /* 
-	std::cout << "len " << std::dec << len << std::endl;*/
+	std::cout << "len " << std::dec << len << std::endl;
 	std::cout << "payload -> " << std::endl;
 		for(int j = 0; j < len; j++)
 			printf("%02X", sniffer->payload[j]);
 		std::cout << std::endl;
-
+*/
 
 
 	if(sniffer->rx_ctrl.rssi < power_thrashold){
